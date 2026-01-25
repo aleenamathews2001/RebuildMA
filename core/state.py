@@ -73,5 +73,40 @@ class MarketingState(TypedDict):
     # Final result + errors
     error: Optional[str]
     final_response: Optional[str]
+    
+    # ✅ EMAIL BUILDER CONTENT
+    # Removed merge_dicts to allow explicit clearing (setting to None)
+    generated_email_content: Optional[Dict[str, Any]]
+    
+    # ✅ SAVE TEMPLATE WORKFLOW CONTEXT
+    save_workflow_context: Annotated[Optional[Dict[str, Any]], merge_dicts]
+    
+    # 🔄 ACTIVE WORKFLOW (For Sticky Routing)
+    # If set, bypasses orchestrator and goes directly to this agent/node
+    active_workflow: Optional[str]
+
+
+class EmailAgentState(TypedDict):
+    """
+    State optimized for the Email Builder Agent.
+    Sub-set or compatible with MarketingState for easy handoff.
+    """
+    user_goal: str
+    messages: Annotated[List[BaseMessage], add_messages]
+    
+    # Context needed for drafting
+    session_context: Optional[Dict[str, Any]]
+    
+    # Output
+    generated_email_content: Dict[str, Any]
+    final_response: Optional[str]
+    error: Optional[str]
+    
+    # 🔄 ACTIVE WORKFLOW (For Sticky Routing)
+    active_workflow: Optional[str]
+    
+    # Routing
+    next_action: Optional[str]
+
 
 

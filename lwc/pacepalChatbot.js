@@ -96,6 +96,11 @@ export default class PacepalChatbot extends NavigationMixin(LightningElement) {
             } else if (data.type === 'response') {
                 this.isSending = false;
                 if (data.success) {
+                    // Check for generated email content FIRST
+                    if (data.generated_email_content) {
+                        this.addEmailMessage(data.generated_email_content);
+                    }
+
                     this.addAgentMessage(data.response, data.created_records, data.salesforce_data);
                 } else {
                     this.addErrorMessage(`Error: ${data.error || data.response}`);
@@ -114,18 +119,39 @@ export default class PacepalChatbot extends NavigationMixin(LightningElement) {
         }
     }
 
+    addEmailMessage(emailContent) {
+        const msgId = Date.now();
+        console.log('📧 Adding Email Message:', JSON.stringify(emailContent));
+
+        const messageObj = {
+            id: msgId,
+            type: 'email',
+            class: 'message message-agent email-card-container',
+            isEmail: true, // Flag for HTML template
+            subject: emailContent.subject || 'No Subject',
+            bodyHtml: emailContent.body_html || '',
+            bodyText: emailContent.body_text || '',
+            tone: emailContent.tone || 'Professional',
+            audience: emailContent.suggested_audience || 'General',
+            timestamp: new Date().toLocaleTimeString()
+        };
+
+        this.messages.push(messageObj);
+        this.scrollToBottom();
+    }
+
     // --- Message Array Management ---
 
     addSystemMessage(text) {
-        this.pushMessage({ id: Date.now(), type: 'system', content: text, class: 'message message-system' });
+        this.pushMessage({ id: Date.now(), type: 'system', content: text, class: 'message message-system', isText: true });
     }
 
     addErrorMessage(text) {
-        this.pushMessage({ id: Date.now(), type: 'error', content: text, class: 'message message-error' });
+        this.pushMessage({ id: Date.now(), type: 'error', content: text, class: 'message message-error', isText: true });
     }
 
     addUserMessage(text) {
-        this.pushMessage({ id: Date.now(), type: 'user', content: text, class: 'message message-user' });
+        this.pushMessage({ id: Date.now(), type: 'user', content: text, class: 'message message-user', isText: true });
     }
 
     addAgentMessage(text, createdRecords, hasData) {
@@ -137,6 +163,7 @@ export default class PacepalChatbot extends NavigationMixin(LightningElement) {
             type: 'agent',
             content: content,
             class: 'message message-agent',
+            isText: true, // Explicit flag for HTML template
             timestamp: new Date().toLocaleTimeString()
         };
 
@@ -541,6 +568,11 @@ export default class PacepalChatbot extends NavigationMixin(LightningElement) {
         }
     }
 
+    handleSaveTemplate(event) {
+        // Send a message acting as the user asking to save
+        this.sendCustomMessage("Save this email template to Brevo.", "Saving template...");
+    }
+
     // --- Input Handling ---
 
     handleMessageChange(event) { this.currentMessage = event.target.value; }
@@ -551,6 +583,8 @@ export default class PacepalChatbot extends NavigationMixin(LightningElement) {
             this.sendMessage();
         }
     }
+
+
 
     sendMessage(uiLabel = null) {
         if (!this.currentMessage.trim()) return;

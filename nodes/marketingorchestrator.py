@@ -30,7 +30,7 @@ async def orchestrator_node(state: MarketingState) -> MarketingState:
         f"- {name}: {meta.get('description', 'No description')}"
         for name, meta in registry.items()
     )
-
+    
     # Build progress summary
     progress_summary = _build_progress_summary(state)
     
@@ -41,7 +41,8 @@ async def orchestrator_node(state: MarketingState) -> MarketingState:
     state["progress_summary"] = progress_summary
     
     # Valid actions for validation (casual_chat will be handled separately)
-    valid_actions = list(registry.keys()) + ["complete","EngagementWorkflow"]
+    logging.info(f"Valid actions: {list(registry.keys())}")
+    valid_actions = list(registry.keys()) + ["complete","EngagementWorkflow", "Email Builder Agent", "EmailBuilderAgent"]
     state["valid_actions"] = valid_actions
     
     # Fetch prompt from Salesforce
@@ -71,7 +72,7 @@ Based on the User Goal and Progress Summary above:
 - **PRIORITY**: If the user asks to "track engagement", "check clicks", "find interested members", or "analyze links", you MUST route to 'EngagementWorkflow'.
 - Do NOT repeat successful operations
 
-What should we do next? Respond with ONLY one of: Salesforce MCP, Brevo MCP, Linkly MCP , EngagementWorkflow, complete, casual_chat:{{message}}"""
+What should we do next? Respond with ONLY one of: Salesforce MCP, Brevo MCP, Linkly MCP , EngagementWorkflow, Email Builder Agent, complete, casual_chat:{{message}}"""
 
     try:
         # Call LLM
@@ -170,6 +171,12 @@ def _build_progress_summary(state: MarketingState) -> str:
         
         summary_parts.append(pending_section)
     
+    # Check for Generated Email Content
+    generated_email = state.get("generated_email_content")
+    if generated_email:
+        subject = generated_email.get("subject", "No subject")
+        summary_parts.append(f"✅ EMAIL CONTENT GENERATED:\n  Subject: {subject}\n  (Content available in state)")
+
     # MCP results summary
     mcp_results = state.get("mcp_results", {})
     if not mcp_results:

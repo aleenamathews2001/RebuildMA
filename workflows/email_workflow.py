@@ -323,7 +323,60 @@ async def send_email_node(state: MarketingState) -> MarketingState:
         res = await execute_single_tool(BREVO_SERVICE, "send_batch_emails", send_args)
         if res["status"] == "success":
             logging.info("   ✅ Batch email sent successfully")
-            ctx["send_result"] = res["data"]
+            send_data = res["data"]
+            
+            # --- Parsing Logic Restored ---
+            successfully_sent_emails = set()
+            failed_sends = {}
+            
+            # Parse Brevo response - handle multiple possible formats
+            if isinstance(send_data, dict):
+                # Format 1: {"success": [...], "failed": [...]}
+                success_list = send_data.get("success", [])
+                failed_list = send_data.get("failed", [])
+                
+                # Format 2: {"messageIds": ["<id1>", "<id2>"], ...} - indicates all succeeded
+                message_ids = send_data.get("messageIds", [])
+                
+                # Process success list if present
+                if success_list:
+                    for item in success_list:
+                        email = item.get("email", "").lower() if isinstance(item, dict) else str(item).lower()
+                        if email:
+                            successfully_sent_emails.add(email)
+                
+                # Process failed list if present
+                if failed_list:
+                    for item in failed_list:
+                        if isinstance(item, dict):
+                            email = item.get("email", "").lower()
+                            error = item.get("error", "Unknown error")
+                        else:
+                            email = str(item).lower()
+                            error = "Send failed"
+                        
+                        if email:
+                            failed_sends[email] = error
+                            logging.warning(f"   ❌ Email failed for {email}: {error}")
+                
+                # Format 3: If messageIds present but no explicit success/failed lists
+                # This means Brevo accepted all emails for sending
+                if message_ids and not success_list and not failed_list:
+                    logging.info(f"   ℹ️ Brevo returned {len(message_ids)} messageIds - all emails accepted")
+                    # We need to map back to emails since messageIds don't contain them
+                    successfully_sent_emails = set([r["email"].lower() for r in recipients if r.get("email")])
+            
+            # Fallback: If response format is unexpected, assume all succeeded
+            if not successfully_sent_emails and not failed_sends:
+                logging.info("   ℹ️ Brevo response format not recognized, assuming all sent successfully")
+                successfully_sent_emails = set([r["email"].lower() for r in recipients if r.get("email")])
+            
+            ctx["send_result"] = send_data
+            ctx["successfully_sent_emails"] = successfully_sent_emails
+            ctx["failed_sends"] = failed_sends
+            
+            logging.info(f"   📊 Parsed Send Results: {len(successfully_sent_emails)} sent, {len(failed_sends)} failed")
+            
             state = _update_mcp_results(state, BREVO_SERVICE, "send_batch_emails", res)
         else:
             state["error"] = f"Send failed: {res.get('error')}"
@@ -335,6 +388,65 @@ async def send_email_node(state: MarketingState) -> MarketingState:
     state["email_workflow_context"] = ctx
     return state
 
+async def track_delivery_status_node(state: MarketingState) -> MarketingState:
+    """
+    detects bounced emails immediately after sending using the track_email_engagement tool.
+    Bounced emails are moved from successfully_sent_emails to failed_sends.
+    """
+    logging.info("🕵️ [EmailWorkflow] Step 4.5: Checking Immediate Delivery/Bounce Status")
+    
+    ctx = state.get("email_workflow_context", {})
+    successfully_sent = ctx.get("successfully_sent_emails", set())
+    failed_sends = ctx.get("failed_sends", {})
+    
+    if not successfully_sent:
+        logging.info("   ℹ️ No successful sends to check.")
+        return state
+        
+    # Convert set to list for API call
+    emails_to_check = list(successfully_sent)
+    
+    # We call track_email_engagement
+    # It returns { "engagement": { "email": { "bounced": bool, ... } } }
+    
+    try:
+        logging.info(f"   🔍 Checking status for {len(emails_to_check)} emails...")
+        res = await execute_single_tool(BREVO_SERVICE, "track_email_engagement", {"emails": emails_to_check})
+        
+        if res["status"] == "success":
+            data = res["data"]
+            engagement = data.get("engagement", {})
+            
+            bounced_detected = []
+            
+            for email, metrics in engagement.items():
+                # metrics might be an error dict if email invalid, or data dict
+                if metrics.get("bounced") is True:
+                    bounced_detected.append(email)
+                    logging.warning(f"   🚨 Detected BOUNCE for {email}")
+            
+            # Update lists
+            for email in bounced_detected:
+                if email in successfully_sent:
+                    successfully_sent.remove(email)
+                    failed_sends[email] = "Detected as Bounced during immediate check"
+            
+            ctx["successfully_sent_emails"] = successfully_sent
+            ctx["failed_sends"] = failed_sends
+            
+            logging.info(f"   ✅ Delivery check complete. Found {len(bounced_detected)} bounces.")
+            state = _update_mcp_results(state, BREVO_SERVICE, "track_email_engagement", res)
+            
+        else:
+            logging.warning(f"   ⚠️ Delivery check failed: {res.get('error')}")
+
+    except Exception as e:
+        logging.error(f"   ❌ Exception checking delivery status: {e}")
+        # Don't fail the workflow, just proceed with what we have
+        
+    state["email_workflow_context"] = ctx
+    return state
+
 async def update_salesforce_node(state: MarketingState) -> MarketingState:
     logging.info("☁️ [EmailWorkflow] Step 5: Updating Salesforce Status")
     
@@ -343,6 +455,9 @@ async def update_salesforce_node(state: MarketingState) -> MarketingState:
     campaign_id = ctx.get("campaign_id")
     short_links_map = ctx.get("short_links_map", {})
     
+    successfully_sent_emails = ctx.get("successfully_sent_emails", set())
+    failed_sends = ctx.get("failed_sends", {})
+
     # We need to update CampaignMember status.
     # Record structure: {CampaignId, ContactId, Status="Sent", ...}
     
@@ -405,11 +520,24 @@ async def update_salesforce_node(state: MarketingState) -> MarketingState:
     
     for contact in contacts:
         c_id = contact.get("Id")
+        c_email = contact.get("Email", "").lower()
         member_id = contact_id_to_member_id.get(c_id)
         
         if not member_id:
             logging.warning(f"   ⚠️ No CampaignMember found for Contact {c_id}, skipping status update.")
             continue
+
+        # Logic:
+        # If email is in failed_sends -> SKIP update (leave as Draft)
+        # If email is in successfully_sent_emails -> Update to "Sent"
+        
+        if c_email in failed_sends:
+            logging.info(f"   🛑 Skipping Salesforce update for bounced/failed email: {c_email}")
+            continue
+            
+        if c_email not in successfully_sent_emails:
+             logging.warning(f"   ⚠️ Email {c_email} not in success list, skipping update.")
+             continue
 
         fields = {
             "Status": "Sent"
@@ -488,6 +616,7 @@ def build_email_workflow():
     builder.add_node("analyze_links", analyze_links_node)
     builder.add_node("link_shortener", link_shortener_node)
     builder.add_node("send_email", send_email_node)
+    builder.add_node("track_delivery", track_delivery_status_node)
     builder.add_node("update_salesforce", update_salesforce_node)
 
     builder.set_entry_point("preview_template")
@@ -504,7 +633,8 @@ def build_email_workflow():
     
     builder.add_edge("preview_template", "analyze_links")
     builder.add_edge("link_shortener", "send_email")
-    builder.add_edge("send_email", "update_salesforce")
+    builder.add_edge("send_email", "track_delivery")
+    builder.add_edge("track_delivery", "update_salesforce")
     builder.add_edge("update_salesforce", END)
 
     return builder.compile()

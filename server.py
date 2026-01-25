@@ -102,7 +102,9 @@ async def run_agent(websocket: WebSocket):
             
             # 🔑 Restore shared_result_sets from session (persists campaign, contacts, etc.)
             restored_result_sets = session_context.get("shared_result_sets", {})
-            
+            restored_email_content = session_context.get("last_generated_email", None)
+            restored_active_workflow = session_context.get("active_workflow", None)
+
             initial_state: MarketingState = {
                 "user_goal": user_message,  # Use received message
                 "messages": [],
@@ -111,7 +113,11 @@ async def run_agent(websocket: WebSocket):
                 # 🔑 Inject session context into state
                 "session_context": session_context.copy(),  # Pass context to the graph
                 # 🔑 Restore shared_result_sets from previous messages in this session
-                "shared_result_sets": restored_result_sets.copy() if restored_result_sets else {}
+                "shared_result_sets": restored_result_sets.copy() if restored_result_sets else {},
+                # 🔑 Restore generated_email_content (Fix for refinement context)
+                "generated_email_content": restored_email_content,
+                # 🔑 Restore active_workflow (Fix for sticky routing)
+                "active_workflow": restored_active_workflow
             }
             final_state = await agent_graph.ainvoke(initial_state)
             
@@ -181,6 +187,17 @@ async def run_agent(websocket: WebSocket):
                 session_context["shared_result_sets"] = final_state["shared_result_sets"]
                 logging.info(f"💾 Persisted shared_result_sets to session: {list(final_state['shared_result_sets'].keys())}")
             
+            # 🔑 Save generated_email_content back to session (Fix for refinement context)
+            if final_state.get("generated_email_content"):
+                session_context["last_generated_email"] = final_state["generated_email_content"]
+                logging.info("💾 Persisted generated_email_content for future refinement.")
+
+            # 🔑 Save active_workflow back to session (Fix for sticky routing)
+            # We explicitly allow it to be None to clear the stickiness
+            session_context["active_workflow"] = final_state.get("active_workflow")
+            if session_context["active_workflow"]:
+                 logging.info(f"🔒 Stickiness logic: keeping user in {session_context['active_workflow']}")
+            
             # 3. SEND response back to client
             # 🔗 Use created_records from completion node (has correct IDs/names)
             created_records_from_state = final_state.get("created_records", {})
@@ -216,6 +233,12 @@ async def run_agent(websocket: WebSocket):
                     logging.error(f"Failed to parse control message: {e}")
 
             if not sent_special:
+                logging.info(f"📤 [Server] Sending response. Keys in final_state: {list(final_state.keys())}")
+                if "generated_email_content" in final_state:
+                    logging.info("   ✅ generated_email_content is present in final_state")
+                else:
+                    logging.warning("   ⚠️ generated_email_content is MISSING from final_state")
+
                 await websocket.send_json({
                     "type": "response",
                     "success": True,
@@ -223,6 +246,7 @@ async def run_agent(websocket: WebSocket):
                     "iterations": final_state.get("iteration_count", 0),
                     "salesforce_data": bool(final_state.get("salesforce_data")),
                     "created_records": filtered_records,  # Send filtered version to UI
+                    "generated_email_content": final_state.get("generated_email_content"), # Sent generated email content to UI
                     "error": final_state.get("error")
                 })
             

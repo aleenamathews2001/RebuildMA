@@ -1,7 +1,12 @@
  
 from typing import List, Dict, Any, Optional
-from client.brevo_client import BrevoApiClient
-from Error.brevo_error import BrevoApiError
+
+try:
+    from mcp_module.Brevomcp.client.brevo_client import BrevoApiClient
+    from mcp_module.Brevomcp.Error.brevo_error import BrevoApiError
+except ImportError:
+    from client.brevo_client import BrevoApiClient
+    from Error.brevo_error import BrevoApiError
  
 async def preview_email(
     template_id: int,

@@ -41,13 +41,13 @@
 
                             <!-- Standard Text Message -->
                             <template if:false={msg.isReview}>
-                                <template if:false={msg.isThinking}>
+                                <template if:true={msg.isText}>
                                     <div class="message-content">
                                         <lightning-formatted-rich-text
                                             value={msg.content}></lightning-formatted-rich-text>
                                     </div>
-                                    <div class="message-timestamp">{msg.timestamp}</div>
                                 </template>
+                                <div class="message-timestamp">{msg.timestamp}</div>
                             </template>
 
                             <!-- Review Proposal Card Message -->
@@ -187,6 +187,39 @@
                                             <button class="proceed-btn" data-id={msg.id} onclick={handleProceed}>Proceed
                                                 with Updates</button>
                                         </template>
+                                    </div>
+                                </div>
+                            </template>
+                            <!-- Email Preview Card -->
+                            <template if:true={msg.isEmail}>
+                                <div class="email-card">
+                                    <div class="email-header">
+                                        <div class="email-icon">
+                                            <lightning-icon icon-name="standard:email" size="small"></lightning-icon>
+                                        </div>
+                                        <div class="email-meta">
+                                            <div class="email-subject-label">Subject</div>
+                                            <div class="email-subject">{msg.subject}</div>
+                                        </div>
+                                        <div class="email-tone-badge">{msg.tone}</div>
+                                    </div>
+
+                                    <div class="email-body-container">
+                                        <lightning-formatted-rich-text
+                                            value={msg.bodyHtml}></lightning-formatted-rich-text>
+                                    </div>
+
+                                    <div class="email-footer">
+                                        <div class="audience-info">
+                                            <lightning-icon icon-name="utility:groups" size="x-small"></lightning-icon>
+                                            <span>{msg.audience}</span>
+                                        </div>
+                                        <div class="email-actions">
+                                            <lightning-button label="Save Template" icon-name="utility:save"
+                                                variant="brand-outline" onclick={handleSaveTemplate} data-id={msg.id}
+                                                class="slds-m-left_small">
+                                            </lightning-button>
+                                        </div>
                                     </div>
                                 </div>
                             </template>

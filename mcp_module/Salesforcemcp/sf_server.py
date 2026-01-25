@@ -6,7 +6,8 @@ from tools import (
     delete_salesforce_record,
     generate_all_toolinput,
     propose_action,
-    upsert_salesforce_records
+    upsert_salesforce_records,
+    tooling_execute
 )
 # Initialize MCP
 mcp = FastMCP("salesforce-mcp")
@@ -15,6 +16,7 @@ mcp.tool()(delete_salesforce_record)
 mcp.tool()(generate_all_toolinput)
 mcp.tool()(propose_action)
 mcp.tool()(upsert_salesforce_records)
+mcp.tool()(tooling_execute)
 
 def main():
     mcp.run(transport="stdio")

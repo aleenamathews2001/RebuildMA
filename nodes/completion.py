@@ -450,6 +450,13 @@ async def completion_node(state: MarketingState) -> MarketingState:
     """
     logging.info("🏁 Completing workflow...")
 
+    # 🧹 CRITICAL STATE CLEANUP to prevent UI glitches
+    if "generated_email_content" in state:
+        logging.info("   🧹 Clearing persistent generated_email_content from state")
+        state["generated_email_content"] = None
+    
+
+
     # Check if there's a final_response already set (e.g., from casual chat)
     if state.get("final_response"):
         logging.info("✅ Final response already set, returning")

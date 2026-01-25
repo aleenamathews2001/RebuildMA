@@ -14,6 +14,8 @@ from mcp.client.stdio import stdio_client
 from core.state import MarketingState
 import sys
 import re
+
+
 _sf_connected=False
 # logging.basicConfig removed to allow server.py to configure logging
 logger = logging.getLogger(__name__)

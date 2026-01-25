@@ -265,15 +265,38 @@ async def test_server():
 
 
 
+#                 result = await session.call_tool(
+#     "generate_all_toolinput",
+#     arguments={
+#         #   "query":"delete a account with id 001fo00000BvwycAAB  "
+#         # "query":"send an email to all contact in this 701fo00000C9bfmAAB campaign saying hi contactname welcome to the event"
+#         "query":"Find active contacts linked to the 'CRMantra' account. and create a campaign named try45 and assign contact to this campaign"
+#     #    "query":"create a campaign named hgt"
+#     }
+#  )
+#                 action = "query/?q=SELECT%20Id%2C%20Metadata%20FROM%20CustomField%20WHERE%20TableEnumOrId%3D%27Campaign%27%20AND%20DeveloperName%3D%27Email_template%27"
+            
+#                 result = await session.call_tool(
+#     "tooling_execute",
+#     arguments={
+#         "action": action, "method": "GET"
+#     }
+#  )  
                 result = await session.call_tool(
-    "generate_all_toolinput",
-    arguments={
-        #   "query":"delete a account with id 001fo00000BvwycAAB  "
-        # "query":"send an email to all contact in this 701fo00000C9bfmAAB campaign saying hi contactname welcome to the event"
-        "query":"Find active contacts linked to the 'CRMantra' account. and create a campaign named try45 and assign contact to this campaign"
-    #    "query":"create a campaign named hgt"
-    }
- )
+  "upsert_salesforce_records",
+  arguments={
+    "object_name": "Campaign",
+    "records": [
+      {
+        "record_id": "701fo00000CiU25AAF",
+        "fields": {
+          "Email_template__c": "13-Join Us in Celebrating CRMantra's 20th Anniversary!"
+        }
+      }
+    ]
+  }
+)
+
                 print("✅ Tool executed successfully!")
                 for content in result.content:
                     print(f"\n{content.text}")            
