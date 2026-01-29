@@ -3,10 +3,13 @@
 FastAPI WebSocket endpoint for real-time agent communication
 """
 import asyncio
+import uuid
 import json
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
+from langgraph.checkpoint.memory import MemorySaver
+from langgraph.types import Command
 from dotenv import load_dotenv
 from core.mcp_loader import preload_mcp_tools
 from baseagent import get_member_dependency
@@ -79,184 +82,183 @@ class MessageResponse(BaseModel):
     error: str | None = None  # Optional field with default None
     salesforce_data: bool = False
 
- 
+
 @app.websocket("/ws/chat")
 async def run_agent(websocket: WebSocket):
-    await websocket.accept()  # Accept connection
+    await websocket.accept()
     
-    # 🔑 Session context: persists across messages (GENERIC for ANY Salesforce object)
-    session_context = {
-        "created_records": {},         # Generic: {"Campaign": [{Id, Name}, ...], "Contact": [...], "Lead": [...], etc.}
-        "conversation_history": []     # Store previous user goals and results
-    }
+    # 🧠 STATEFUL MEMORY: Persistent checkpointer for this connection
+    memory = MemorySaver()
+    agent_graph = build_marketing_graph(checkpointer=memory)
     
+    # Generate unique session ID for this connection
+    session_id = str(uuid.uuid4())
+    logging.info(f"🔌 New WebSocket connection. Assigned Session ID: {session_id}")
+    thread_config = {"configurable": {"thread_id": session_id}} 
+
+
     try:
-        while True:  # Keep connection open
-            # 1. RECEIVE message from client
+        while True:
+            # 1. RECEIVE message
             data = await websocket.receive_text()
             message_data = json.loads(data)
             user_message = message_data.get("message", "")
             
-            # 2. PROCESS the message
-            agent_graph = build_marketing_graph()
+            # 2. CHECK STATUS (Interrupted vs New)
+            # Inspect current state to see if we are paused
+            snapshot = await agent_graph.aget_state(thread_config)
             
-            # 🔑 Restore shared_result_sets from session (persists campaign, contacts, etc.)
-            restored_result_sets = session_context.get("shared_result_sets", {})
-            restored_email_content = session_context.get("last_generated_email", None)
-            restored_active_workflow = session_context.get("active_workflow", None)
-
-            initial_state: MarketingState = {
-                "user_goal": user_message,  # Use received message
-                "messages": [],
-                "max_iterations": 5,
-                "iteration_count": 0,
-                # 🔑 Inject session context into state
-                "session_context": session_context.copy(),  # Pass context to the graph
-                # 🔑 Restore shared_result_sets from previous messages in this session
-                "shared_result_sets": restored_result_sets.copy() if restored_result_sets else {},
-                # 🔑 Restore generated_email_content (Fix for refinement context)
-                "generated_email_content": restored_email_content,
-                # 🔑 Restore active_workflow (Fix for sticky routing)
-                "active_workflow": restored_active_workflow
-            }
-            final_state = await agent_graph.ainvoke(initial_state)
+            final_state = {}
             
-            # 🔑 UPDATE session context with newly created records
-            if final_state.get("salesforce_data"):
-                sf_data = final_state["salesforce_data"]
-                previous_results = sf_data.get("previous_results", [])
-                tool_results = sf_data.get("tool_results", [])
+            if snapshot.next:
+                # ⏸️ PAUSED: We are at an interrupt!
+                logging.info(f"▶️ Resuming interrupted graph. Next nodes: {snapshot.next}")
                 
-                logging.info(f"🔍 DEBUG: previous_results type: {type(previous_results)}")
-                logging.info(f"🔍 DEBUG: previous_results count: {len(previous_results) if previous_results else 0}")
-                if previous_results:
-                    logging.info(f"🔍 DEBUG: First previous_result sample: {previous_results[0] if previous_results else 'None'}")
-
-                # Strategy 2: Extract from tool_results (for create/upsert operations) - GENERIC
-                if tool_results:
-                    for tool_result in tool_results:
-                        if tool_result.get("status") != "success":
-                            continue
-                        
-                        tool_name = tool_result.get("tool_name", "")
-                        request = tool_result.get("request", {})
-                        
-                        # Handle ANY object type creation/upsert
-                        obj_type = request.get("object_name", "") or request.get("sobject", "")
-                        
-                        if obj_type:
-                            response = tool_result.get("response", {})
-                            record_id = None
-                            # Get Name field, or use object type if Name doesn't exist
-                            record_name = request.get("fields", {}).get("Name") or f"{obj_type} Record"
-                            
-                            # Parse response to get ID
-                            if hasattr(response, 'content'):
-                                for item in response.content:
-                                    if hasattr(item, 'text'):
-                                        try:
-                                            parsed = json.loads(item.text)
-                                            record_id = parsed.get("id") or parsed.get("Id")
-                                        except:
-                                            pass
-                            # Also check if response is already a dict (direct tool result)
-                            elif isinstance(response, dict):
-                                record_id = response.get("id") or response.get("Id")
-                            
-                            if record_id:
-                                if obj_type not in session_context["created_records"]:
-                                    session_context["created_records"][obj_type] = []
-                                
-                                record_info = {
-                                    "Id": record_id,
-                                    "Name": record_name
-                                }
-                                # Avoid duplicates
-                                if not any(r["Id"] == record_id for r in session_context["created_records"][obj_type]):
-                                    session_context["created_records"][obj_type].append(record_info)
-                                    logging.info(f"📌 Stored {obj_type} from {tool_name}: {record_info}")
-        
-                # Store conversation history
-                session_context["conversation_history"].append({
+                # Resume with the user's message as the answer
+                # Command(resume=value) sends 'value' as the result of the interrupt() call
+                res_command = Command(resume=user_message)
+                
+                final_state = await agent_graph.ainvoke(res_command, thread_config)
+                
+            else:
+                # ▶️ IDLE: Start a new turn
+                logging.info("▶️ Starting new graph turn.")
+                
+                # Check for "Exit" intent to clear history/state if desired?
+                # For now, just append to state.
+                
+                from langchain_core.messages import HumanMessage
+                
+                initial_input = {
                     "user_goal": user_message,
-                    "result_summary": final_state.get("final_response", "")
-                })
-            
-            # 🔑 Save shared_result_sets back to session for next message
-            if final_state.get("shared_result_sets"):
-                session_context["shared_result_sets"] = final_state["shared_result_sets"]
-                logging.info(f"💾 Persisted shared_result_sets to session: {list(final_state['shared_result_sets'].keys())}")
-            
-            # 🔑 Save generated_email_content back to session (Fix for refinement context)
-            if final_state.get("generated_email_content"):
-                session_context["last_generated_email"] = final_state["generated_email_content"]
-                logging.info("💾 Persisted generated_email_content for future refinement.")
+                    # 📝 Update History Immediately
+                    "messages": [HumanMessage(content=user_message)],
+                    
+                    # 🧹 CLEAR ALL TRANSIENT STATE (Stateless Logic, Persistent Chat)
+                    # We accept that memory is persistent (Checkpointer), so we must manually wipe 
+                    # the "Logic State" from the previous turn to prevent valid history from polluting new turns.
+                    
+                    "final_response": None,
+                    "error": None,
+                    "next_action": None, 
+                    "salesforce_data": None,
+                    "mcp_results": None, # Fixes Proposal Loop
+                    
+                    # Fixes "Ghost Workflows" (e.g. Email Builder exiting immediately)
+                    "active_workflow": None, 
+                    "task_directive": None,
+                    "pending_updates": None,
+                    
+                    # Fixes "Ghost Context" (e.g. "Great news, campaign created" showing up 10 mins later)
+                    "email_workflow_context": None,
+                    "engagement_workflow_context": None,
+                    "save_workflow_context": None,
+                    "brevo_results": None,
+                    "linkly_links": None,
+                    "created_records": None,
+                    
+                    # Note: We KEEP 'session_context' and 'shared_result_sets' because they might hold 
+                    # "found contacts" that the user refers to as "them" in the next turn.
+                    # We KEEP 'messages' because that is the Chat History.
+                }
+                
+                # Run the graph (no try/except for GraphInterrupt as it may just return)
+                await agent_graph.ainvoke(initial_input, thread_config)
+                
+                # 🔍 Check resulting state for interrupts
+                # 🔍 Check resulting state for interrupts
+                snapshot = await agent_graph.aget_state(thread_config)
+                final_state = snapshot.values
+                
+                # DEBUG LOGGING
+                logging.info(f"🔎 [Server] Snapshot Next: {snapshot.next}")
+                logging.info(f"🔎 [Server] Snapshot Tasks: {len(snapshot.tasks)}")
+                if snapshot.tasks:
+                     logging.info(f"    Task[0] Interrupts: {snapshot.tasks[0].interrupts}")
+                
+                if snapshot.tasks and snapshot.tasks[0].interrupts:
+                    # 🛑 INTERRUPT DETECTED
+                    logging.info("🛑 Graph execution interrupted (detected via snapshot).")
+                    
+                    interrupt_value = snapshot.tasks[0].interrupts[0].value
+                    logging.info(f"   📋 Interrupt Payload: {interrupt_value}")
+                    
+                    # Send specific response for control messages
+                    if isinstance(interrupt_value, str) and ('"type": "confirmation"' in interrupt_value or '"type": "review_proposal"' in interrupt_value):
+                        await websocket.send_json(json.loads(interrupt_value))
+                    else:
+                        # Fallback text response
+                        await websocket.send_json({
+                            "type": "response",
+                            "success": True,
+                            "response": str(interrupt_value),
+                            "iterations": 0,
+                            "salesforce_data": False,
+                            "created_records": {},
+                            "generated_email_content": None, # Force clean
+                            "error": None
+                        })
+                    continue # Skip standard processing
 
-            # 🔑 Save active_workflow back to session (Fix for sticky routing)
-            # We explicitly allow it to be None to clear the stickiness
-            session_context["active_workflow"] = final_state.get("active_workflow")
-            if session_context["active_workflow"]:
-                 logging.info(f"🔒 Stickiness logic: keeping user in {session_context['active_workflow']}")
+            # 3. PROCESS RESULT (Logic mostly same as before, but extracting from final_state)
             
-            # 3. SEND response back to client
-            # 🔗 Use created_records from completion node (has correct IDs/names)
-            created_records_from_state = final_state.get("created_records", {})
-            logging.info(f"🔗 [Server] created_records from state: {created_records_from_state}")
+            # 🔗 EXTRACT CREATED RECORDS (from persisted state)
+            # MemorySaver keeps "created_records" key alive if it was set before.
+            # But completion node usually regenerates it from mcp_results of *that* run.
             
-            # 🔴 Filter out junction objects (objects without Name field) for UI display
+            # We need to accumulate them for the UI session if the graph doesn't keep them all defined.
+            # Our State definition uses 'merge_dicts' for 'created_records', so it should accumulate!
+            
+            created_records_map = final_state.get("created_records", {}) or {}
+            
+            # Filter for UI (remove ' Record' suffix if any)
             filtered_records = {}
-            # Prefer completion node's created_records (more accurate)
-            source_records = created_records_from_state if created_records_from_state else session_context["created_records"]
-            logging.info(f"🔗 [Server] source_records: {source_records}")
-            
-            for obj_type, records in source_records.items():
-                # Only include records that have an actual Name (not auto-generated)
-                main_records = [r for r in records if r.get("Name") and not r["Name"].endswith(" Record")]
-                logging.info(f"🔗 [Server] {obj_type}: {len(records)} total, {len(main_records)} after filter")
-                if main_records:
-                    filtered_records[obj_type] = main_records
-            
-            logging.info(f"🔗 [Server] filtered_records to send: {filtered_records}")
+            for obj_type, records in created_records_map.items():
+                valid_recs = []
+                for r in records:
+                    name = r.get("Name", "")
+                    if name and not name.endswith(" Record"):
+                        valid_recs.append(r)
+                if valid_recs:
+                    filtered_records[obj_type] = valid_recs
             
             final_resp = final_state.get("final_response", "Task completed")
             
-            # 🚀 CHECK FOR CONTROL MESSAGES (Review Proposal)
-            # If the response is our special JSON, send it RAW so LWC sees type='review_proposal'
-            sent_special = False
-            if isinstance(final_resp, str) and '"type": "review_proposal"' in final_resp:
-                try:
-                    control_msg = json.loads(final_resp)
-                    # Preserve context if needed, but usually proposal has everything
-                    await websocket.send_json(control_msg)
-                    sent_special = True
-                except Exception as e:
-                    logging.error(f"Failed to parse control message: {e}")
-
-            if not sent_special:
-                logging.info(f"📤 [Server] Sending response. Keys in final_state: {list(final_state.keys())}")
-                if "generated_email_content" in final_state:
-                    logging.info("   ✅ generated_email_content is present in final_state")
-                else:
-                    logging.warning("   ⚠️ generated_email_content is MISSING from final_state")
-
+            # 📝 INTERRUPT HANDLING IN UI
+            # If the graph stops *again* at an interrupt (e.g. asking a question),
+            # final_state might reflect the state *at the pause*.
+            # The 'final_response' key needs to be set by the node BEFORE calling interrupt().
+            # In our logic:
+            # prepare_link_node does: state["final_response"] = "Should I...?" THEN calls interrupt().
+            # So final_state["final_response"] IS the question. Perfect.
+            
+            # 🚀 CHECK FOR CONTROL MESSAGES (Review Proposal or Confirmation)
+            if isinstance(final_resp, str) and ('"type": "review_proposal"' in final_resp or '"type": "confirmation"' in final_resp):
+                await websocket.send_json(json.loads(final_resp))
+            else:
                 await websocket.send_json({
                     "type": "response",
                     "success": True,
                     "response": final_resp,
                     "iterations": final_state.get("iteration_count", 0),
                     "salesforce_data": bool(final_state.get("salesforce_data")),
-                    "created_records": filtered_records,  # Send filtered version to UI
-                    "generated_email_content": final_state.get("generated_email_content"), # Sent generated email content to UI
+                    "created_records": filtered_records,
+                    "generated_email_content": final_state.get("generated_email_content"),
                     "error": final_state.get("error")
                 })
             
     except WebSocketDisconnect:
         logging.info("Client disconnected")
     except Exception as e:
+        logging.error(f"Server Error: {e}")
+        import traceback
+        logging.error(traceback.format_exc())
         await websocket.send_json({
             "type": "error",
             "message": str(e)
         })
+            
+
 
 if __name__ == "__main__":
     import uvicorn

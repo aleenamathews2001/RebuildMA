@@ -60,16 +60,34 @@ async def orchestrator_node(state: MarketingState) -> MarketingState:
         state=state
     )
     
+    # Build conversation history
+    messages = state.get("messages", [])
+    history_lines = []
+    # Take last 5 messages to preserve context without blowing up tokens
+    for msg in messages[-5:]:
+        role = "User" if msg.type == "human" else "Assistant"
+        content = str(msg.content)
+        # Truncate very long messages
+        if len(content) > 200:
+            content = content[:200] + "..."
+        history_lines.append(f"{role}: {content}")
+    
+    conversation_history = "\n".join(history_lines) if history_lines else "No history yet."
+    logging.info(f"user_goal in satte is :\n{state['user_goal']}")
     # Build user prompt
     user_prompt = f"""User Goal: {state['user_goal']}
 
 Progress So Far:
 {progress_summary}
 
+Recent Conversation History:
+{conversation_history}
+
 Based on the User Goal and Progress Summary above:
 - If the goal is ALREADY realized by the completed operations, respond with 'complete'
 - If there is NEW work to be done, choose the next agent
 - **PRIORITY**: If the user asks to "track engagement", "check clicks", "find interested members", or "analyze links", you MUST route to 'EngagementWorkflow'.
+- **DEPENDENCY**: If the goal involves sending email to a list/campaign, you MUST route to 'Salesforce MCP' first to fetch contacts, unless 'contacts' or 'CampaignMember' results are already listed in the Progress Summary. Do NOT route to 'Brevo MCP' until contacts are available.
 - Do NOT repeat successful operations
 
 What should we do next? Respond with ONLY one of: Salesforce MCP, Brevo MCP, Linkly MCP , EngagementWorkflow, Email Builder Agent, complete, casual_chat:{{message}}"""

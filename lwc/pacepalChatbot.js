@@ -3,7 +3,7 @@ import { ShowToastEvent } from 'lightning/platformShowToastEvent';
 import { NavigationMixin } from 'lightning/navigation';
 
 export default class PacepalChatbot extends NavigationMixin(LightningElement) {
-    @api websocketUrl = 'wss://90107d10890d.ngrok-free.app/ws/chat';
+    @api websocketUrl = 'wss://f56d9f3db490.ngrok-free.app/ws/chat';
 
     @track isChatOpen = false;
     @track currentMessage = '';
@@ -108,7 +108,11 @@ export default class PacepalChatbot extends NavigationMixin(LightningElement) {
             } else if (data.type === 'review_proposal') {
                 this.isSending = false;
                 this.addReviewProposalMessage(data);
-            } else if (data.type === 'error') {
+            } else if (data.type === 'confirmation') {
+                this.isSending = false;
+                this.addConfirmationMessage(data);
+            }
+            else if (data.type === 'error') {
                 this.isSending = false;
                 this.addErrorMessage(`Error: ${data.message}`);
             }
@@ -279,7 +283,53 @@ export default class PacepalChatbot extends NavigationMixin(LightningElement) {
 
         this.scrollToBottom();
     }
+    addConfirmationMessage(data) {
+        console.log('✅ Adding Confirmation Message:', JSON.stringify(data));
+        const msgId = Date.now();
+        const msg = {
+            id: msgId,
+            type: 'confirmation',
+            class: 'message message-agent', // Use safe class
+            content: data.message,
+            isConfirmation: true,
+            options: data.options || ['Yes', 'No'],
+            timestamp: new Date().toLocaleTimeString()
+        };
+        this.messages.push(msg);
+        this.scrollToBottom();
+    }
 
+    handleOptionSelect(event) {
+        const value = event.target.dataset.value;
+        const msgId = event.target.dataset.id;
+
+        // Find the message and disable buttons
+        const msgIndex = this.messages.findIndex(m => m.id == msgId);
+        if (msgIndex !== -1) {
+            let newMsg = { ...this.messages[msgIndex] };
+            newMsg.isAnswered = true; // Disable buttons
+            // Force reactivity by creating a new array reference
+            this.messages = [...this.messages.slice(0, msgIndex), newMsg, ...this.messages.slice(msgIndex + 1)];
+        }
+
+        this.sendCustomMessage(value, value);
+    }
+
+
+
+    handleSaveTemplate(event) {
+        const msgId = event.target.dataset.id;
+        const msgIndex = this.messages.findIndex(m => m.id == msgId);
+
+        if (msgIndex !== -1) {
+            const newMsg = { ...this.messages[msgIndex] };
+            newMsg.isSaved = true; // Disable Save button
+            this.messages[msgIndex] = newMsg;
+        }
+
+        // Send a message acting as the user asking to save
+        this.sendCustomMessage("Save this email template to Brevo.", "Saving template...");
+    }
     async enrichRelatedRecords(msgId, records) {
         const processedRecords = [];
 
@@ -568,13 +618,21 @@ export default class PacepalChatbot extends NavigationMixin(LightningElement) {
         }
     }
 
+    // --- Input Handling ---
     handleSaveTemplate(event) {
+        const msgId = event.target.dataset.id;
+        const msgIndex = this.messages.findIndex(m => m.id == msgId);
+
+        if (msgIndex !== -1) {
+            let newMsg = { ...this.messages[msgIndex] };
+            newMsg.isSaved = true; // Disable Save button
+            // Force reactivity by creating a new array reference
+            this.messages = [...this.messages.slice(0, msgIndex), newMsg, ...this.messages.slice(msgIndex + 1)];
+        }
+
         // Send a message acting as the user asking to save
         this.sendCustomMessage("Save this email template to Brevo.", "Saving template...");
     }
-
-    // --- Input Handling ---
-
     handleMessageChange(event) { this.currentMessage = event.target.value; }
 
     handleKeyPress(event) {
@@ -583,8 +641,6 @@ export default class PacepalChatbot extends NavigationMixin(LightningElement) {
             this.sendMessage();
         }
     }
-
-
 
     sendMessage(uiLabel = null) {
         if (!this.currentMessage.trim()) return;

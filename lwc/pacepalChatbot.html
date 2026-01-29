@@ -50,6 +50,24 @@
                                 <div class="message-timestamp">{msg.timestamp}</div>
                             </template>
 
+                            <!-- Confirmation Message -->
+                            <template if:true={msg.isConfirmation}>
+                                <div class="review-proposal-container inline-card">
+                                    <div class="review-body">
+                                        <p class="review-intro">{msg.content}</p>
+                                    </div>
+                                    <div class="review-footer">
+                                        <template for:each={msg.options} for:item="opt">
+                                            <button key={opt} class="proceed-btn" data-id={msg.id} data-value={opt}
+                                                onclick={handleOptionSelect} disabled={msg.isAnswered}>
+                                                {opt}
+                                            </button>
+                                        </template>
+                                    </div>
+                                </div>
+                            </template>
+
+
                             <!-- Review Proposal Card Message -->
                             <template if:true={msg.isReview}>
                                 <div class="review-proposal-container inline-card">
@@ -217,7 +235,7 @@
                                         <div class="email-actions">
                                             <lightning-button label="Save Template" icon-name="utility:save"
                                                 variant="brand-outline" onclick={handleSaveTemplate} data-id={msg.id}
-                                                class="slds-m-left_small">
+                                                class="slds-m-left_small" disabled={msg.isSaved}>
                                             </lightning-button>
                                         </div>
                                     </div>

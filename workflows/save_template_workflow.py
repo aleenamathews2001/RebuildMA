@@ -17,7 +17,7 @@ async def create_template_node(state: MarketingState) -> MarketingState:
     logging.info("💾 [SaveTemplateWorkflow] Step 1: Creating Brevo Template")
     
     # Initialize save_workflow_context early to ensure state persistence
-    if "save_workflow_context" not in state:
+    if not state.get("save_workflow_context"):
         state["save_workflow_context"] = {}
     
     email_data = state.get("generated_email_content")
@@ -69,6 +69,7 @@ async def create_template_node(state: MarketingState) -> MarketingState:
         state["error"] = str(e)
         
     return state
+
 # async def ensure_picklist_value(
 #     object_name: str,
 #     field_name: str,
@@ -385,13 +386,25 @@ async def ensure_picklist_value(object_name: str, field_name: str, value: str) -
     logging.info(f"✅ Successfully added/ensured '{value}' on {object_name}.{field_name}")
     return True
 
-async def link_campaign_node(state: MarketingState) -> MarketingState:
+from langgraph.types import interrupt
+
+async def prepare_link_node(state: MarketingState) -> MarketingState:
     """
-    Links the created template to the Salesforce Campaign.
+    Step 2: Prepares for linking. Finds campaign, ensures picklist, sets up confirmation.
     """
-    logging.info("🔗 [SaveTemplateWorkflow] Step 2: Linking to Salesforce Campaign")
+    # 🛑 Check for previous errors
+    if state.get("error"):
+        logging.error(f"   ❌ Skipping prepare_link_node due to previous error: {state['error']}")
+        state["final_response"] = state["error"]
+        return state
+
+    logging.info("� [SaveTemplateWorkflow] Step 2a: Preparing Link (Search & Picklist)")
     
-    ctx = state.get("save_workflow_context", {})
+    ctx = state.get("save_workflow_context")
+    if not ctx:
+        ctx = {}
+        state["save_workflow_context"] = ctx
+
     template_id = ctx.get("template_id")
     template_name = ctx.get("template_name", "Template")
     
@@ -401,56 +414,111 @@ async def link_campaign_node(state: MarketingState) -> MarketingState:
     
     # Create picklist value in format 'templateid-name'
     picklist_value = f"{template_id}-{template_name}"
+    ctx["picklist_value"] = picklist_value # Save for next node
     
     # ✅ ALWAYS update picklist metadata when we have a template_id
     logging.info(f"   🛠️ Ensuring picklist value '{picklist_value}' exists in Campaign.Email_template__c")
-    await ensure_picklist_value("Campaign", "Email_template__c", picklist_value)
-    
-    # Get Campaign ID from session context or top-level shared_result_sets
-    session_context = state.get("session_context", {})
-    
-    # Try top-level shared_result_sets first
+    if not await ensure_picklist_value("Campaign", "Email_template__c", picklist_value):
+        error_msg = f"❌ Failed to ensure picklist value '{picklist_value}' in Salesforce."
+        logging.error(error_msg)
+        state["error"] = error_msg
+        state["final_response"] = error_msg
+        return state
+    logging.info(f"shared result set: {state.get('shared_result_sets')}")
+    # ✅ DYNAMIC CAMPAIGN LOOKUP (Updated to remove hardcoding)
+    # We look for ANY campaign in the shared state (assuming current context)
     shared_results = state.get("shared_result_sets", {})
-    campaigns = shared_results.get("Campaign") or shared_results.get("campaign", [])
-
+    campaigns = shared_results.get("campaign", [])
+    logging.info(f"campaign data: {campaigns}")
     
-    # Fallback to session_context.shared_result_sets
+    # Fallback to key 'campaigns' (plural) if planner stored it that way
     if not campaigns:
-        shared_results = session_context.get("shared_result_sets", {})
-        campaigns = shared_results.get("Campaign") or shared_results.get("campaign", [])
+        campaigns = shared_results.get("campaign", [])
+        
+    campaign_id = None
+    campaign_name = "Unknown Campaign"
     
-    if not campaigns:
-        logging.warning("   ⚠️ No active campaign found in session. Skipping link.")
-        state["final_response"] = f"✅ Template saved to Brevo (ID: {template_id}). Picklist value '{picklist_value}' added to Salesforce, but no active campaign found to link."
-        return state
+    if campaigns and isinstance(campaigns, list) and len(campaigns) > 0:
+        campaign = campaigns[0]
+        campaign_id = campaign.get("Id") or campaign.get("App_Id")
+        campaign_name = campaign.get("Name", "Unnamed Campaign")
+        logging.info(f"   ✅ Auto-detected Campaign context: {campaign_name} ({campaign_id})")
     
-    campaign_id = campaigns[0].get("Id")
+    ctx["campaign_id"] = campaign_id
+    ctx["campaign_name"] = campaign_name
+    
     if not campaign_id:
-        logging.warning("   ⚠️ Campaign record missing ID. Skipping.")
-        state["final_response"] = f"✅ Template saved to Brevo (ID: {template_id}). Picklist value '{picklist_value}' added."
+        logging.warning("   ⚠️ No linked Campaign found in context (shared_result_sets). Skipping link step.")
+        state["final_response"] = f"✅ Template saved (ID: {template_id}, Name: {template_name}).\n(No active campaign found to link to.)"
         return state
+        
+    logging.info(f"   🛑 Found Campaign {campaign_id}. Preparing interrupt...")
     
-    logging.info(f"   🎯 Found Campaign ID: {campaign_id}")
+    # Create structured confirmation message for UI
+    confirmation_payload = json.dumps({
+        "type": "confirmation",
+        "message": f"I found the campaign '{campaign_name}'. Should I link this new template to it?",
+        "options": ["Yes", "No"]
+    })
     
-    # Upsert Logic - set Email_template__c to the picklist value
+    # Set final_response so server sends this JSON to client
+    state["final_response"] = confirmation_payload
+    
+    # Save updated context
+    state["save_workflow_context"] = ctx
+    
+    return state
+
+async def upsert_link_node(state: MarketingState) -> MarketingState:
+    """
+    Step 3: Handles Interrupt and Upsert.
+    """
+    logging.info("🔗 [SaveTemplateWorkflow] Step 2b: Upsert Link (Interrupt Handler)")
+
+    # 🛑 Check for previous errors - SKIP INTERRUPT
+    if state.get("error"):
+        logging.error(f"   ❌ Skipping upsert_link_node (and interrupt) due to previous error: {state['error']}")
+        # final_response should already be set by the node that caused the error
+        return state
+
+    # 🛑 TRIGGER INTERRUPT IMMEDIATELY
+    # The payload is already in state["final_response"] from previous node
+    interrupt_payload = state.get("final_response")
+    user_response = interrupt(interrupt_payload)
+    
+    # RESUME LOGIC
+    ans = str(user_response).lower()
+    logging.info(f"   ▶️ Resumed with user response: '{ans}'")
+    
+    ctx = state.get("save_workflow_context", {})
+    template_id = ctx.get("template_id")
+    picklist_value = ctx.get("picklist_value")
+    campaign_id = ctx.get("campaign_id")
+    
+    if "yes" not in ans and "proceed" not in ans:
+        logging.info("   ❌ User declined linking.")
+        state["final_response"] = f"✅ Template saved to Brevo (ID: {template_id}). Link to Salesforce cancelled by user."
+        return state
+
+    if not all([campaign_id, picklist_value]):
+         logging.error("Missing context data for upsert.")
+         state["final_response"] = "❌ Error: Missing context data for linking."
+         return state
+
+    logging.info("   ✅ User approved. Proceeding with Upsert.")
+
+    # Upsert Logic
     args={
-    "object_name": "Campaign",
-    "records": [
-      {
-        "record_id": campaign_id,
-        "fields": {
-          "Email_template__c": picklist_value
-        }
-      }
-    ]
-  }
-    # args = {
-    #     "object_name": "Campaign",
-    #     "record": {
-    #         "record_id": campaign_id,
-    #         "Email_template__c": picklist_value  # Use the formatted value
-    #     } 
-    # }
+        "object_name": "Campaign",
+        "records": [
+          {
+            "record_id": campaign_id,
+            "fields": {
+              "Email_template__c": picklist_value
+            }
+          }
+        ]
+    }
     
     try:
         res = await execute_single_tool(SALESFORCE_SERVICE, "upsert_salesforce_records", args)
@@ -458,14 +526,34 @@ async def link_campaign_node(state: MarketingState) -> MarketingState:
         if res["status"] == "success":
              logging.info(f"   ✅ Linked Template '{picklist_value}' to Campaign {campaign_id}")
              state["final_response"] = f"✅ Template saved to Brevo (ID: {template_id}) and linked to Salesforce Campaign with value '{picklist_value}'."
+             
+             # 🔄 UPDATE SHARED STATE (IN-MEMORY)
+             # This ensures the agent sees the new template immediately without re-fetching
+             shared_results = state.get("shared_result_sets", {})
+             updated_count = 0
+             
+             for key, records in shared_results.items():
+                 if isinstance(records, list):
+                     for rec in records:
+                         # flexible ID check
+                         rec_id = rec.get("Id") or rec.get("App_Id")
+                         if rec_id == campaign_id:
+                             old_val = rec.get("Email_Template__c")
+                             rec["Email_Template__c"] = picklist_value
+                             logging.info(f"   🔄 Updated shared state for Campaign {campaign_id}: {old_val} -> {picklist_value}")
+                             updated_count += 1
+             
+             if updated_count > 0:
+                 state["shared_result_sets"] = shared_results
+                 
         else:
              err = res.get('error', '')
              logging.error(f"   ❌ Failed to link campaign: {err}")
-             state["final_response"] = f"✅ Template saved (ID: {template_id}), picklist value added, but failed to link to campaign: {err}"
+             state["final_response"] = f"✅ Template saved (ID: {template_id}), picklist added, but failed to link: {err}"
     
     except Exception as e:
         logging.error(f"   ❌ Exception linking campaign: {e}")
-        state["final_response"] = f"✅ Template saved to Brevo (ID: {template_id}), picklist value added, but error linking to Salesforce: {str(e)}"
+        state["final_response"] = f"✅ Template saved (ID: {template_id}), picklist added, but exception linking: {str(e)}"
         
     return state
 
@@ -473,11 +561,12 @@ def build_save_template_workflow():
     builder = StateGraph(MarketingState)
     
     builder.add_node("create_template", create_template_node)
-    builder.add_node("link_campaign", link_campaign_node)
+    builder.add_node("prepare_link_node", prepare_link_node)
+    builder.add_node("upsert_link_node", upsert_link_node)
     
     builder.set_entry_point("create_template")
-    
-    builder.add_edge("create_template", "link_campaign")
-    builder.add_edge("link_campaign", END)
+    builder.add_edge("create_template", "prepare_link_node")
+    builder.add_edge("prepare_link_node", "upsert_link_node")
+    builder.add_edge("upsert_link_node", END)
     
     return builder.compile()

@@ -42,12 +42,14 @@ class MarketingState(TypedDict):
     current_agent: str
     
     # Data coming back from sub-agents - use merge_dicts to preserve across updates
-    salesforce_data: Annotated[Optional[Dict[str, Any]], merge_dicts]
-    brevo_results: Annotated[Optional[Dict[str, Any]], merge_dicts]
-    linkly_links: Annotated[Optional[Dict[str, Any]], merge_dicts]
+    # Data coming back from sub-agents - use merge_dicts to preserve across updates
+    salesforce_data: Optional[Dict[str, Any]]
+    brevo_results: Optional[Dict[str, Any]]
+    linkly_links: Optional[Dict[str, Any]]
     
     # Generic MCP results storage for dynamic handling
-    mcp_results: Annotated[Optional[Dict[str, Any]], merge_dicts]
+    # 🔴 Removed merge_dicts to allow clearing (overwrite with None) via server.py
+    mcp_results: Optional[Dict[str, Any]]
     
     # Persistent Session History
     session_history: Annotated[Optional[List[Dict[str, Any]]], merge_history]
@@ -56,34 +58,44 @@ class MarketingState(TypedDict):
     session_context: Annotated[Optional[Dict[str, Any]], merge_dicts]
       
     # ✅ SHARED RESULT SETS: Data persistence across agents (e.g. campaign data for Brevo)
-    shared_result_sets: Annotated[Optional[Dict[str, Any]], merge_dicts]
+    # Changed from merge_dicts to Replace reducer to allow full control (and key deletion) by nodes
+    shared_result_sets: Annotated[Optional[Dict[str, Any]], lambda x, y: y if y is not None else x]
     
     # ✅ TASK DIRECTIVES: For multi-step workflows (e.g. update CampaignMember status after email send)
     task_directive: Optional[str]
-    pending_updates: Annotated[Optional[Dict[str, Any]], merge_dicts]
+    pending_updates: Optional[Dict[str, Any]]
 
     # 🔗 CREATED RECORDS: For LWC hyperlink generation (extracted by completion node)
-    created_records: Annotated[Optional[Dict[str, Any]], merge_dicts]
+    created_records: Optional[Dict[str, Any]]
 
     # ✅ EMAIL WORKFLOW CONTEXT: Temporary state for deterministic email workflow
-    email_workflow_context: Annotated[Optional[Dict[str, Any]], merge_dicts]
+    email_workflow_context: Optional[Dict[str, Any]]
 
-    engagement_workflow_context: Annotated[Optional[Dict[str, Any]], merge_dicts]
+    engagement_workflow_context: Optional[Dict[str, Any]]
 
     # Final result + errors
     error: Optional[str]
     final_response: Optional[str]
+    
+    # ✅ FAIL FLAG (To stop loops)
+    workflow_failed: Optional[bool]
     
     # ✅ EMAIL BUILDER CONTENT
     # Removed merge_dicts to allow explicit clearing (setting to None)
     generated_email_content: Optional[Dict[str, Any]]
     
     # ✅ SAVE TEMPLATE WORKFLOW CONTEXT
-    save_workflow_context: Annotated[Optional[Dict[str, Any]], merge_dicts]
+    save_workflow_context: Optional[Dict[str, Any]]
     
     # 🔄 ACTIVE WORKFLOW (For Sticky Routing)
     # If set, bypasses orchestrator and goes directly to this agent/node
     active_workflow: Optional[str]
+
+    # ✅ REVIEW PROPOSAL STATE
+    # Used to resume execution after interrupt
+    plan_override: Optional[Dict[str, Any]]
+    pending_proposal_plan: Optional[Dict[str, Any]]
+    pending_proposal_details: Optional[Dict[str, Any]]
 
 
 class EmailAgentState(TypedDict):

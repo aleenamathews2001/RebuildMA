@@ -1449,14 +1449,15 @@ async def find_relevant_objects_and_fields_async(user_query: str, context_object
         
         object_relationships = get_object_relationships_cached()
         
-        for junction_obj, related_objs in object_relationships.items():
-            if junction_obj in objects_set:
-                continue
-            
-            connections = set(related_objs) & objects_set
-            if len(connections) >= 2:
-                logging.info(f"🧠 Inferred junction object: {junction_obj} (connects {connections})")
-                objects_to_process.append(junction_obj)
+        # 🧠 Junction Object Inference DISABLED per user request
+        # for junction_obj, related_objs in object_relationships.items():
+        #     if junction_obj in objects_set:
+        #         continue
+        #     
+        #     connections = set(related_objs) & objects_set
+        #     if len(connections) >= 2:
+        #         logging.info(f"🧠 Inferred junction object: {junction_obj} (connects {connections})")
+        #         objects_to_process.append(junction_obj)
         
         # ✅ OPTIMIZATION: Parallel field fetching (this is the speed gain)
         logging.info(f"🚀 Fetching {len(objects_to_process)} objects in parallel...")

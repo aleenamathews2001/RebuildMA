@@ -81,8 +81,10 @@ async def send_batch_emails(
             
             # Add 'to' recipients with their individual params
             for r in recipients:
+                # Safe name handling: r.get("name") might return None, so use `or ""`
+                safe_name = r.get("name") or ""
                 version = {
-                    "to": [{"email": r["email"], "name": r.get("name", "")}]
+                    "to": [{"email": r["email"], "name": safe_name}]
                 }
                 if "params" in r:
                     version["params"] = r["params"]
@@ -220,6 +222,8 @@ async def send_batch_emails(
         #         payload["headers"] = headers
 
         # Make the API request
+        import logging
+        logging.info(f"📤 [send_batch_emails] Sending payload to Brevo: {json.dumps(payload, indent=2)}")
         response = await client.request("/smtp/email", method="POST", data=payload)
         
         # Determine mode based on what was sent

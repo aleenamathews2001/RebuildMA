@@ -513,84 +513,38 @@ except Exception as e:
 # ========================================
 # SCHEMA INITIALIZATION FUNCTION
 # ========================================
+ 
 
 def initialize_schema(force=False):
     """Initialize schema embeddings in ChromaDB with comprehensive error handling"""
     global schema_data
-    
     try:
-        # ✅ HARDCODED PATH - Update this to your actual file path
-        #file_path = r"C:\Users\ALEENA\OneDrive\Desktop\Marketing agent working latest\salesforceSchema.docx"
-        file_path = r"C:\Users\ALEENA\OneDrive\Desktop\rebuild MA\salesforceSchema.docx"
+        # Go up 3 levels from .../mcp_module/Salesforcemcp/chromadbutils.py to .../Marketing agent/
+        ROOT_DIR = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+        SCHEMA_PATH = os.path.join(ROOT_DIR, "schema_metadata.json")
         
-        logger.info(f" Looking for schema file at: {file_path}")
-        
-        if not file_path:
-            logger.warning("SALESFORCE_SCHEMA environment variable not set")
-            return False
-            
-        # Check if file exists
-        if not os.path.exists(file_path):
-            logger.error(f" Schema file not found at path: {file_path}")
-            return False
-            
-        # ⚡ OPTIMIZATION: Check if DB is already populated to skip heavy Word Doc parsing
-        # BUT skip this check if force=True (i.e. we want to rebuild)
-        if not force:
-            try:
-                coll = chroma_manager.get_or_create_objects_collection()
-                if coll.count() > 0:
-                    logger.info("⚡ Schema already populated in DB. Skipping Word doc parsing for fast startup.")
-                    
-                    # ⚡ CRITICAL FIX: Load schema_data from JSON so other modules can use it
-                    try:
-                        root_dir = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-                        json_path = os.path.join(root_dir, 'schema_metadata.json')
-                        if os.path.exists(json_path):
-                            with open(json_path, 'r') as f:
-                                schema_data = json.load(f)
-                            logger.info(f"⚡ Loaded {len(schema_data)} objects from schema_metadata.json")
-                        else:
-                            logger.warning("⚠️ schema_metadata.json not found, schema_data will be empty")
-                    except Exception as json_err:
-                        logger.warning(f"Failed to load schema_metadata.json: {json_err}")
-
-                    return True
-            except Exception as e:
-                logger.warning(f"Could not check existing DB count: {e}")
-        
-        # Extract JSON from Word document
-        logger.info(" Extracting text from Word document...")
+        # Extract Salesforce schema JSON 
+        logger.info(f"Loading salesforce schema from JSON file: {SCHEMA_PATH}")
         try:
-            text = extract_json_from_word(file_path)
-            if not text:
-                logger.error("Failed to extract text from Word document")
+            # Example of loading the schema
+            with open(SCHEMA_PATH, "r") as f:
+                schema_data = json.load(f)
+            if not schema_data:
+                logger.error("Schema file is empty or invalid")
                 return False
         except FileNotFoundError:
-            logger.error(f"Schema file not found: {file_path}")
+            logger.error("Schema file not found: salesforce_schema.json")
             return False
         except PermissionError:
-            logger.error(f"Permission denied accessing file: {file_path}")
+            logger.error("Permission denied accessing schema file: salesforce_schema.json")
             return False
-        except Exception as e:
-            logger.error(f"Error extracting JSON from Word document: {e}")
-            return False
-        
-        # Parse JSON from extracted text
-        logger.info(" Parsing JSON from extracted text...")
-        try:
-            schema_data = parse_json_from_text(text)
-            if not schema_data:
-                logger.error("Failed to parse JSON from extracted text")
-                return False
         except json.JSONDecodeError as e:
             logger.error(f"Invalid JSON format in schema file: {e}")
             return False
         except Exception as e:
-            logger.error(f"Error parsing JSON from text: {e}")
+            logger.error(f"Unexpected error loading schema file: {e}")
             return False
-
-        logger.info(f" Loaded schema with {len(schema_data)} objects")
+        logger.info(f"Loaded salesforce schema with {len(schema_data)} top-level objects")
         
         # Store embeddings in ChromaDB with error handling
         logger.info("Storing object embeddings in ChromaDB...")
@@ -613,14 +567,7 @@ def initialize_schema(force=False):
             try:
                 # 🏷️ ENRICHMENT: Generate/Ensure Labels exist before saving
                 schema_data = enrich_schema_with_labels(schema_data)
-                
-                # Export schema_metadata.json to the parent folder (agent root)
-                root_dir = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-                json_path = os.path.join(root_dir, 'schema_metadata.json')
-                
-                with open(json_path, 'w') as f:
-                    json.dump(schema_data, f, indent=2)
-                logger.info(f"📄 Exported schema metadata to {json_path}")
+                logger.info("✅ Schema enriched with labels")
             except Exception as e:
                 logger.warning(f"Could not export schema metadata JSON: {e}")
                 

@@ -67,12 +67,12 @@ async def email_builder_node(state: EmailAgentState) -> EmailAgentState:
         return state
 
     # 🔴 EXIT INTENT
-    exit_keywords = ["stop", "exit", "done", "cancel", "salesforce", "linkly", "brevo", "main menu"]
-    if any(w in last_msg for w in exit_keywords):
-        logging.info("   🛑 User requested exit from Email Builder.")
-        state["active_workflow"] = None  # Clear stickiness
-        state["final_response"] = "Exiting Email Builder. What else can I do for you?"
-        return state
+    # exit_keywords = ["stop", "exit", "done", "cancel", "salesforce", "linkly", "brevo", "main menu"]
+    # if any(w in last_msg for w in exit_keywords):
+    #     logging.info("   🛑 User requested exit from Email Builder.")
+    #     state["active_workflow"] = None  # Clear stickiness
+    #     state["final_response"] = "Exiting Email Builder. What else can I do for you?"
+    #     return state
 
     # 2. Otherwise, set sticky flag
     state["active_workflow"] = "email_builder_agent"
@@ -98,25 +98,42 @@ async def email_builder_node(state: EmailAgentState) -> EmailAgentState:
 Your task is to draft OR REFINE a professional, engaging email based on the user's request and conversation history.
 
 CONTEXT:
-If a 'Current Draft' is provided, you must REFINE it based on the user's latest feedback (e.g., "make it shorter", "add signature").
-If no draft exists, create a new one.
+- If a 'Current Draft' is provided, you must REFINE it based on the user's latest feedback.
+- If no draft exists, create a new one.
 
 OUTPUT FORMAT:
-Return a JSON object with the following keys:
+Return ONLY a JSON object with exactly these keys:
 {
-    "subject": "The email subject line",
-    "body_html": "The email body in HTML format (clean, responsive, no extra css)",
-    "body_text": "The plain text version of the email",
-    "tone": "The tone used (e.g., Professional, Friendly)",
-    "suggested_audience": "Who this email is good for"
+  "subject": "The email subject line",
+  "body_html": "The email body in HTML format (clean, responsive, no extra css)",
+  "body_text": "The plain text version of the email",
+  "tone": "The tone used (e.g., Professional, Friendly)",
+  "suggested_audience": "Who this email is good for"
 }
 
 RULES:
-1. ONLY return JSON. No markdown blocking.
-2. Be creative but professional.
-3. Use placeholders like {{FirstName}} if appropriate for personalization.
-4. If the user asks for a revision, keeping the parts they didn't ask to change (unless improvements are needed).
+1) ONLY return JSON. No markdown, no extra commentary.
+2) Be creative but professional.
+3) Use placeholders like {{params.Name}} for personalization when appropriate.
+4) If the user asks for a revision, keep the parts they didn’t ask to change (unless improvements are needed).
+
+CTA / LINK RULE:
+- Include a link ONLY if the user provides a URL.
+- If a URL is provided:
+  a) Use exactly ONE main CTA anchor tag in body_html in this format:
+     <a href="{{Params.Link}}">LINK_TEXT</a>
+  b) LINK_TEXT must be the ACTUAL URL provided by the user (show the full URL), not a label like "Learn more" or a product name.
+  c) Also include a visible fallback line in BOTH formats using the SAME variable:
+     - body_html: "Link: {{params.Link}}"
+     - body_text: "Link: {{params.Link}}"
+- If NO URL is provided:
+  Do NOT include {{Params.Link}}, do NOT include any <a href> tag, and do NOT invent a link.
 """
+
+
+
+
+
 
     user_prompt = f"""User Request: {user_goal}
 

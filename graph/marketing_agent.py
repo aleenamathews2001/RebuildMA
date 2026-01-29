@@ -1,7 +1,7 @@
 from core.state import MarketingState
 from langgraph.graph import StateGraph, END
 from nodes.marketingorchestrator import orchestrator_node
-from nodes.dynamic_caller import dynamic_caller
+from nodes.dynamic_caller import dynamic_caller, review_proposal_node
 from nodes.completion import completion_node
 from workflows.engagement_workflow import build_engagement_workflow
 from workflows.email_workflow import build_email_workflow
@@ -24,7 +24,14 @@ def route_decision(state: MarketingState) -> str:
         return "complete"
     
     # 🚀 INTERCEPT Brevo calls to use the specialized workflow
+    # 🚀 INTERCEPT Brevo calls to use the specialized workflow
     if next_action == "Brevo MCP":
+        # Check if the intent is actually to SAVE a template (which is also a Brevo action)
+        user_goal = state.get("user_goal", "").lower()
+        if "save" in user_goal and "template" in user_goal:
+            logging.info("🔀 Routing to Save Template Workflow (detected via intent)")
+            return "save_template_workflow"
+            
         logging.info("🔀 Routing to deterministic Email Workflow")
         return "email_workflow"
         
@@ -67,18 +74,19 @@ def start_router(state: MarketingState) -> str:
     
     return "orchestrator"
 
-def build_marketing_graph():
+def build_marketing_graph(checkpointer=None):
     builder = StateGraph(MarketingState)
 
     builder.add_node("orchestrator", orchestrator_node)
     builder.add_node("dynamic_caller", dynamic_caller)
+    builder.add_node("review_proposal", review_proposal_node)
     builder.add_node("completion", completion_node)
     
     # ✅ Add Subgraphs
     builder.add_node("email_workflow", build_email_workflow())
     builder.add_node("engagement_workflow", build_engagement_workflow())
     builder.add_node("email_builder_agent", build_email_builder_agent())
-    builder.add_node("save_template_workflow", build_save_template_workflow()) # NEW
+    builder.add_node("save_template_workflow", build_save_template_workflow())
 
     # ✅ Conditional Entry Point
     builder.set_conditional_entry_point(
@@ -98,12 +106,27 @@ def build_marketing_graph():
             "email_workflow": "email_workflow",
             "engagement_workflow": "engagement_workflow",
             "email_builder_agent": "email_builder_agent",
+            "save_template_workflow": "save_template_workflow",
             "complete": "completion",
         },
     )
     
-    builder.add_edge("dynamic_caller", "orchestrator")
-    builder.add_edge("email_workflow", "orchestrator") # Loop back for next steps
+
+    # ✅ CONDITIONAL LOOP: Check if email workflow failed
+    def should_continue(state):
+        if state.get("workflow_failed"):
+            logging.info("🛑 Workflow marked as failed. Stopping execution.")
+            return END
+        return "orchestrator"
+
+    builder.add_conditional_edges(
+        "email_workflow",
+        should_continue,
+        {
+            "orchestrator": "orchestrator",
+            END: END
+        }
+    )
     builder.add_edge("engagement_workflow", "orchestrator") # Loop back for next steps
     
     # ✅ Email Builder Transition Logic
@@ -121,4 +144,4 @@ def build_marketing_graph():
 
     builder.add_edge("completion", END)
     
-    return builder.compile()
+    return builder.compile(checkpointer=checkpointer)

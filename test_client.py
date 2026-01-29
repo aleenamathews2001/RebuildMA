@@ -17,7 +17,7 @@ async def test_server():
     """Test the MCP server properly."""
     server_params = StdioServerParameters(
         command="python",
-        args=["mcp_module/salesforcemcp/sf_server.py"],
+        args=["mcp_module/Brevomcp/brevo_server.py"],
     )
     
     async with stdio_client(server_params) as (read, write):
@@ -282,20 +282,20 @@ async def test_server():
 #         "action": action, "method": "GET"
 #     }
 #  )  
-                result = await session.call_tool(
-  "upsert_salesforce_records",
-  arguments={
-    "object_name": "Campaign",
-    "records": [
-      {
-        "record_id": "701fo00000CiU25AAF",
-        "fields": {
-          "Email_template__c": "13-Join Us in Celebrating CRMantra's 20th Anniversary!"
-        }
-      }
-    ]
-  }
-)
+  #               result = await session.call_tool(
+  # "upsert_salesforce_records",
+  # arguments={
+  #   "object_name": "Campaign",
+  #   "records": [
+  #     {
+  #       "record_id": "701fo00000CiU25AAF",
+  #       "fields": {
+  #         "Email_template__c": "13-Join Us in Celebrating CRMantra's 20th Anniversary!"
+  #       }
+  #     }
+  #   ]
+#   }
+# )
 
                 print("✅ Tool executed successfully!")
                 for content in result.content:

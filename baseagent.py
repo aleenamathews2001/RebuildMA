@@ -1450,29 +1450,145 @@ async def call_mcp_v2(
                     "shared_result_sets": result_sets,
                 }
                 
-                # Call internal tool to get plan
-                logging.info(f"📋 [{service_name}] Calling internal tool: {internal_tool}")
-                gen_args = {"query": state.get("user_goal", ""), "context": planning_context}
+                # Check if we have a plan override (resume from interrupt)
+                plan = state.get("plan_override") 
                 
-                try:
-                    gen_result = await session.call_tool(internal_tool, gen_args)
-                    logging.info(f"🔍 [gen_result] Raw response: {gen_result}")
-                    plan_text = extract_json_response_from_tool_result(gen_result)
+                if plan:
+                     logging.info(f"🔄 [{service_name}] Resuming with overridden plan from user approval (Internal Tool)")
+                     calls = plan.get("calls", [])
+                else:
+                    # Determine intent: if context says "update status", use that
+                    # logic is inside generate_all_toolinput or similar
                     
-                    if not plan_text:
-                        logging.warning(f"[{service_name}] Internal tool returned empty plan")
-                        return {"execution_summary": {"total_calls": 0}, "tool_results": [], "result_sets": result_sets}
+                    # Call internal tool to get plan
+                    logging.info(f"📋 [{service_name}] Calling internal tool: {internal_tool}")
+                    gen_args = {"query": state.get("user_goal", ""), "context": planning_context}
                     
-                    plan = json.loads(plan_text)
-                    calls = plan.get("calls", [])
-                    
-                    if not calls:
-                        logging.info(f"✅ [{service_name}] No tools to execute")
-                        return {"execution_summary": {"total_calls": 0}, "tool_results": [], "result_sets": result_sets}
-                    
-                except Exception as e:
-                    logging.error(f"❌ [{service_name}] Failed to get plan: {e}")
-                    return {"execution_summary": {"total_calls": 0}, "tool_results": [], "error": str(e), "result_sets": result_sets}
+                    try:
+                        gen_result = await session.call_tool(internal_tool, gen_args)
+                        logging.info(f"🔍 [gen_result] Raw response: {gen_result}")
+                        plan_text = extract_json_response_from_tool_result(gen_result)
+                        
+                        if not plan_text:
+                            logging.warning(f"[{service_name}] Internal tool returned empty plan")
+                            return {"execution_summary": {"total_calls": 0}, "tool_results": [], "result_sets": result_sets}
+                        
+                        plan = json.loads(plan_text)
+                        calls = plan.get("calls", [])
+                        
+                        if not calls:
+                            logging.info(f"✅ [{service_name}] No tools to execute")
+                            return {"execution_summary": {"total_calls": 0}, "tool_results": [], "result_sets": result_sets}
+
+                        # 🔄 PARTIAL EXECUTION LOOP
+                        logging.info(f"🚀 [{service_name}] Starting execution loop ({len(calls)} calls)")
+                        tool_results = []
+                        
+                        for idx, call in enumerate(calls):
+                             tool_name = call.get("tool", "").lower()
+                             
+                             # 1. CHECK FOR UNSAFE ACTIONS -> INTERRUPT
+                             is_unsafe = any(x in tool_name for x in ["upsert", "delete", "create", "update"])
+                             
+                             if is_unsafe:
+                                 logging.info(f"🛑 [call_mcp_v2] Hit unsafe tool '{tool_name}' - Stopping for PROPOSAL")
+                                 remaining_calls = calls[idx:] # Current + Future calls
+                                 
+                                 # Construct proposal details
+                                 args = call.get("arguments", {})
+                                 
+                                 # Resolve placeholders for UI clarity
+                                 try:
+                                     resolved_args_for_ui = resolve_tool_placeholders(args, {}, result_sets)
+                                 except Exception as e:
+                                     logging.warning(f"Failed to resolve args for UI: {e}")
+                                     resolved_args_for_ui = args
+
+                                 obj = resolved_args_for_ui.get("object_name") or resolved_args_for_ui.get("object")
+                                 
+                                 fields = {}
+                                 if "records" in resolved_args_for_ui and isinstance(resolved_args_for_ui["records"], list) and resolved_args_for_ui["records"]:
+                                      fields = resolved_args_for_ui["records"][0].get("fields", {})
+                                 elif "fields" in resolved_args_for_ui:
+                                      fields = resolved_args_for_ui["fields"]
+                                 else:
+                                      fields = resolved_args_for_ui
+
+                                 proposal_details = {
+                                     "object_name": obj or "Record",
+                                     "fields": fields,
+                                     "action_type": "create" if "create" in tool_name or "upsert" in tool_name else "update",
+                                     "tool_call": call 
+                                 }
+                                 
+                                 return {
+                                     "status": "proposal",
+                                     "proposal": proposal_details,
+                                     "generated_plan": {"calls": remaining_calls, "needs_next_iteration": False}, 
+                                     "result_sets": result_sets, # Includes results from safe tools run so far
+                                     "tool_results": tool_results
+                                 }
+
+                             # 2. EXECUTE SAFE TOOL
+                             logging.info(f"🟢 [call_mcp_v2] Auto-executing safe tool: {tool_name}")
+                             arguments = call.get("arguments", {})
+                             store_as = call.get("store_as")
+                             
+                             # ✅ AUTO-FIX: Derive store_as from Query Object if missing
+                             if "run_dynamic_soql" in tool_name and not store_as:
+                                 query = arguments.get("query", "")
+                                 import re
+                                 # Simple regex to find "FROM ObjectName"
+                                 match = re.search(r"from\s+(\w+)", query, re.IGNORECASE)
+                                 if match:
+                                     obj_name = match.group(1).lower()
+                                     # Handle common pluralization needs if planner expects 'contacts'
+                                     # But user asked to use object name.
+                                     # If object is 'Contact', store as 'contact'.
+                                     # NOTE: If planner expects 'contacts', this might mismatch, but we'll try to rely on fuzzy matching later if needed.
+                                     # For now, simplistic derivation.
+                                     logging.info(f"   🔧 Auto-setting store_as='{obj_name}' (derived from query)")
+                                     store_as = obj_name
+                                     
+                                     # HACK: If object has 'contact' in it, also alias to 'contacts' via side-channel?
+                                     # No, let's stick to user request: Use object name.
+                                     if obj_name == 'contact':
+                                         store_as = 'contacts' # Planner typically expects plural for iteration
+                                 else:
+                                     logging.info(f"   🔧 Auto-setting store_as='records' (fallback)")
+                                     store_as = "records"
+                             
+                             try:
+                                 resolved_args = resolve_tool_placeholders(arguments, {}, result_sets)
+                                 result = await session.call_tool(tool_name, resolved_args)
+                                 
+                                 if getattr(result, 'isError', False):
+                                     logging.error(f"❌ Safe tool {tool_name} failed")
+                                     tool_results.append({"tool": tool_name, "status": "error", "error": str(result)})
+                                 else:
+                                     logging.info(f"✅ Safe tool {tool_name} succeeded")
+                                     tool_results.append({"tool": tool_name, "status": "success", "response": result})
+                                     
+                                     if store_as:
+                                         rows = extract_rows_from_result(result)
+                                         if rows:
+                                             result_sets[store_as] = rows
+                                             logging.info(f"   💾 Stored {len(rows)} records as '{store_as}'")
+                                             
+                             except Exception as e:
+                                  logging.error(f"❌ Exception running safe tool: {e}")
+                                  tool_results.append({"tool": tool_name, "status": "error", "error": str(e)})
+                        
+                        # ALL DONE
+                        return {
+                             "execution_summary": {"total_calls": len(tool_results)}, 
+                             "tool_results": tool_results, 
+                             "result_sets": result_sets
+                        }
+                        
+                    except Exception as e:
+                        logging.error(f"❌ [{service_name}] Failed to get plan: {e}")
+                        return {"execution_summary": {"total_calls": 0}, "tool_results": [], "error": str(e), "result_sets": result_sets}
                 
                 # Execute tools from internal_tool plan (single iteration)
                 logging.info(f"🔧 [{service_name}] Executing {len(calls)} tool calls from internal tool plan")

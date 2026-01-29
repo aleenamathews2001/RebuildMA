@@ -382,7 +382,9 @@ def _is_engagement_workflow_summary(state: MarketingState) -> tuple[bool, str]:
     Returns:
         (is_engagement_summary, summary_content)
     """
-    ctx = state.get("engagement_workflow_context", {})
+    ctx = state.get("engagement_workflow_context")
+    if not ctx:
+        return False, None
     
     # 1. Engagement workflow must have run and completed its summary step
     # The summary_node always populates 'update_summary' or 'members_who_clicked'
@@ -421,7 +423,7 @@ def _handle_email_workflow_completion(state: MarketingState) -> tuple[bool, dict
     Detects if email workflow completed and returns context for LLM generation.
     Returns: (is_email, context_data, created_records_dict)
     """
-    ctx = state.get("email_workflow_context", {})
+    ctx = state.get("email_workflow_context")
     if not ctx or not ctx.get("campaign_id"):
         return False, {}, {}
         

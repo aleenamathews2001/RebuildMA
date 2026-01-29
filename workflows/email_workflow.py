@@ -42,10 +42,102 @@ def _update_mcp_results(state: MarketingState, service_name: str, tool_name: str
     state["mcp_results"] = mcp_results
     return state
 
+# async def preview_template_node(state: MarketingState) -> MarketingState:
+#     """
+#     1. Previews the email template using Brevo MCP.
+#     2. Stores the preview result for link analysis.
+#     """
+#     logging.info("🚀 [EmailWorkflow] Step 1: Preview Template")
+    
+#     shared_data = state.get("shared_result_sets", {})
+    
+#     # Extract Campaign and Contact data
+#     campaign_id = None
+#     template_id = None
+#     contacts = []
+    
+#     if "campaign" in shared_data:
+#         campaigns = shared_data["campaign"]
+#         if campaigns:
+#              campaign_data = campaigns[0]
+#              campaign_id = campaign_data.get("Id")
+#              template_id = campaign_data.get("Email_template__c")
+             
+#              # Fallback if field name is different
+#              if not template_id:
+#                  template_id = campaign_data.get("description") # sometimes stored here in testing?
+            
+#              # Clean field: Extract integer if format is "3 - Name"
+#              if template_id:
+#                  tid_str = str(template_id)
+#                  if not tid_str.isdigit():
+#                      # Try to match starting digits
+#                      match = re.match(r'^(\d+)', tid_str)
+#                      if match:
+#                          template_id = match.group(1)
+#                          logging.info(f"   🧹 Cleaned Template ID '{tid_str}' to '{template_id}'")
+#                      else:
+#                          logging.warning(f"   ⚠️ Could not extract integer ID from '{tid_str}'")
+#                          template_id = None
+     
+#     # Also check if template_id was passed directly in the user request or previous context?
+#     # For now, rely on Salesforce data.
+             
+#     if "contacts" in shared_data:
+#         contacts = shared_data["contacts"]
+        
+#     logging.info(f"   Campaign ID: {campaign_id}, Template ID: {template_id}, Contacts: {len(contacts)}")
+
+#     if not template_id:
+#         msg = "❌ Missing Template ID in campaign data"
+#         logging.error(msg)
+#         state["error"] = msg
+#         return state
+
+#     if not contacts:
+#         msg = "❌ No contacts found in result set 'contacts'"
+#         logging.error(msg)
+#         state["error"] = msg
+#         return state
+
+#     # Sample preview for link detection (using first contact)
+#     sample_contact = contacts[0]
+#     preview_args = {
+#         "template_id": int(template_id),
+#         "recipients": [{"email": sample_contact.get("Email"), "name": sample_contact.get("FirstName")}]
+#     }
+
+#     try:
+#         result = await execute_single_tool(BREVO_SERVICE, "preview_email", preview_args)
+        
+#         if result["status"] == "success":
+#             # Store necessary context in temporary state fields
+#             # We add them to shared_result_sets or a temporary stash?
+#             # MarketingState has 'mcp_results' which is good.
+#             # But let's use a specific key for this workflow data
+#             email_ctx = {
+#                 "template_id": int(template_id),
+#                 "contacts": contacts,
+#                 "preview_data": result["data"],
+#                 "campaign_id": campaign_id,
+#                 "campaign_name": campaign_data.get("Name")
+#             }
+#             state.setdefault("email_workflow_context", {}).update(email_ctx)
+#             logging.info("   ✅ Preview successful")
+#         else:
+#             state["error"] = f"Preview failed: {result.get('error')}"
+
+#     except Exception as e:
+#         logging.error(f"Failed to preview: {e}")
+#         state["error"] = str(e)
+
+#     return state
+
 async def preview_template_node(state: MarketingState) -> MarketingState:
     """
     1. Previews the email template using Brevo MCP.
     2. Stores the preview result for link analysis.
+    ⚠️ STOPS workflow if template ID is missing.
     """
     logging.info("🚀 [EmailWorkflow] Step 1: Preview Template")
     
@@ -61,11 +153,12 @@ async def preview_template_node(state: MarketingState) -> MarketingState:
         if campaigns:
              campaign_data = campaigns[0]
              campaign_id = campaign_data.get("Id")
+             campaign_name = campaign_data.get("Name", "Unknown Campaign")
              template_id = campaign_data.get("Email_template__c")
              
              # Fallback if field name is different
              if not template_id:
-                 template_id = campaign_data.get("description") # sometimes stored here in testing?
+                 template_id = campaign_data.get("description")
             
              # Clean field: Extract integer if format is "3 - Name"
              if template_id:
@@ -80,63 +173,130 @@ async def preview_template_node(state: MarketingState) -> MarketingState:
                          logging.warning(f"   ⚠️ Could not extract integer ID from '{tid_str}'")
                          template_id = None
      
-    # Also check if template_id was passed directly in the user request or previous context?
-    # For now, rely on Salesforce data.
-             
     if "contacts" in shared_data:
         contacts = shared_data["contacts"]
         
     logging.info(f"   Campaign ID: {campaign_id}, Template ID: {template_id}, Contacts: {len(contacts)}")
 
+    # ⛔ CRITICAL: Stop workflow if template ID is missing
     if not template_id:
-        msg = "❌ Missing Template ID in campaign data"
-        logging.error(msg)
-        state["error"] = msg
+        error_msg = (
+            f"❌ Template ID Missing\n\n"
+            f"Campaign '{campaign_name}' does not have an email template assigned.\n\n"
+            f"Action Required:\n"
+            f"1. Assign an email template to the Campaign's 'Email_template__c' field in Salesforce\n"
+            f"2. Retry sending the email\n\n"
+            f"Cannot proceed without a template."
+        )
+        logging.error(error_msg)
+        
+        # Set error and mark workflow as failed
+        state["error"] = error_msg
+        state["final_response"] = error_msg  # ✅ FIX: Ensure message is shown in UI
+        state["workflow_failed"] = True  # Flag to stop execution
+        
+        # ✅ FIX: Add Campaign to created_records so LWC can hyperlink it
+        state["created_records"] = {
+            "Campaign": [{
+                "Id": campaign_id,
+                "Name": campaign_name,
+                "attributes": {"type": "Campaign"}
+            }]
+        }
+        
+        # Update MCP results to show failure
+        state = _update_mcp_results(
+            state, 
+            BREVO_SERVICE, 
+            "preview_email", 
+            {
+                "status": "error",
+                "error": "Missing template ID",
+                "data": error_msg
+            }
+        )
+        
         return state
 
+    # ⛔ CRITICAL: Stop workflow if no contacts found
     if not contacts:
-        msg = "❌ No contacts found in result set 'contacts'"
-        logging.error(msg)
-        state["error"] = msg
+        error_msg = (
+            f"❌ **No Contacts Found**\n\n"
+            f"No contacts were found in the result set for Campaign '{campaign_name}' (ID: {campaign_id}).\n\n"
+            f"**Action Required:**\n"
+            f"1. Add contacts to the campaign in Salesforce\n"
+            f"2. Retry sending the email\n\n"
+            f"**Cannot proceed without recipients.**"
+        )
+        logging.error(error_msg)
+        
+        state["error"] = error_msg
+        state["final_response"] = error_msg  # ✅ FIX: Ensure message is shown in UI
+        state["workflow_failed"] = True
+        
+        state = _update_mcp_results(
+            state, 
+            BREVO_SERVICE, 
+            "preview_email", 
+            {
+                "status": "error",
+                "error": "No contacts found",
+                "data": error_msg
+            }
+        )
+        
         return state
 
     # Sample preview for link detection (using first contact)
     sample_contact = contacts[0]
+    logging.info(f"   👤 Sample Contact Keys: {list(sample_contact.keys())}")
+    
+    # Robust name extraction
+    c_name = sample_contact.get("FirstName") or sample_contact.get("Name") or "Valued Customer"
+    
     preview_args = {
         "template_id": int(template_id),
-        "recipients": [{"email": sample_contact.get("Email"), "name": sample_contact.get("FirstName")}]
+        "recipients": [{"email": sample_contact.get("Email"), "name": c_name}]
     }
 
     try:
         result = await execute_single_tool(BREVO_SERVICE, "preview_email", preview_args)
+        logging.info(f"   🛠️ Tool Result Type: {type(result)}")
         
-        if result["status"] == "success":
-            # Store necessary context in temporary state fields
-            # We add them to shared_result_sets or a temporary stash?
-            # MarketingState has 'mcp_results' which is good.
-            # But let's use a specific key for this workflow data
+        if result and result["status"] == "success":
+            # Store necessary context
             email_ctx = {
                 "template_id": int(template_id),
                 "contacts": contacts,
                 "preview_data": result["data"],
                 "campaign_id": campaign_id,
-                "campaign_name": campaign_data.get("Name")
+                "campaign_name": campaign_name
             }
-            state.setdefault("email_workflow_context", {}).update(email_ctx)
+            # Safe update to handle case where context might be None
+            ctx = state.get("email_workflow_context") or {}
+            ctx.update(email_ctx)
+            state["email_workflow_context"] = ctx
             logging.info("   ✅ Preview successful")
         else:
-            state["error"] = f"Preview failed: {result.get('error')}"
+            error_msg = f"Preview failed: {result.get('error')}"
+            state["error"] = error_msg
+            state["final_response"] = error_msg # ✅ FIX
+            state["workflow_failed"] = True
 
     except Exception as e:
-        logging.error(f"Failed to preview: {e}")
-        state["error"] = str(e)
+        error_msg = f"Preview exception: {str(e)}"
+        logging.error(error_msg)
+        state["error"] = error_msg
+        state["final_response"] = error_msg # ✅ FIX
+        state["workflow_failed"] = True
 
     return state
-
 async def analyze_links_node(state: MarketingState) -> MarketingState:
     logging.info("🔍 [EmailWorkflow] Step 2: Analyzing Links")
     
-    ctx = state.get("email_workflow_context", {})
+    ctx = state.get("email_workflow_context")
+    if not ctx:
+        ctx = {}
     preview_data = ctx.get("preview_data", {})
     logging.info(f"ctx,{ctx} and preview data: {preview_data}")
     has_links = False
@@ -177,7 +337,9 @@ async def analyze_links_node(state: MarketingState) -> MarketingState:
 async def link_shortener_node(state: MarketingState) -> MarketingState:
     logging.info("🔗 [EmailWorkflow] Step 3: Linkly Shortening")
     
-    ctx = state.get("email_workflow_context", {})
+    ctx = state.get("email_workflow_context")
+    if not ctx:
+        ctx = {}
     contacts = ctx.get("contacts", [])
     found_urls = ctx.get("found_urls", []) # List of URLs to shorten
     campaign_id = ctx.get("campaign_id")
@@ -191,7 +353,7 @@ async def link_shortener_node(state: MarketingState) -> MarketingState:
     for c in contacts:
         linkly_contacts.append({
             "email": c.get("Email"),
-            "name": c.get("FirstName"),
+            "name": c.get("FirstName") or c.get("Name"),
         })
     
     gen_args = {
@@ -250,7 +412,9 @@ async def link_shortener_node(state: MarketingState) -> MarketingState:
 async def send_email_node(state: MarketingState) -> MarketingState:
     logging.info("📧 [EmailWorkflow] Step 4: Sending Emails via Brevo")
     
-    ctx = state.get("email_workflow_context", {})
+    ctx = state.get("email_workflow_context")
+    if not ctx:
+        ctx = {}
     contacts = ctx.get("contacts", [])
     template_id = ctx.get("template_id")
     short_links_map = ctx.get("short_links_map", {})
@@ -258,34 +422,90 @@ async def send_email_node(state: MarketingState) -> MarketingState:
     if not contacts or not template_id:
         return state
 
+    # template_params = ctx.get("template_params", [])
+    # logging.info(f"template_params: {template_params}")
+    # # Prepare recipients for batch sending
+    # recipients = []
+    # logging.info(f"contact email send ,{len(contacts)}")
+    # for contact in contacts:
+    #     c_id = contact.get("Id")
+    #     c_email = contact.get("Email")
+    #     # Robust name extraction
+    #     c_name = contact.get("FirstName") or contact.get("Name") or "Valued Customer"
+        
+    #     # Prepare params dynamically
+    #     params = {}
+    #     if template_params:
+    #         for key in template_params:
+    #             # 1. Exact match
+    #             val = contact.get(key)
+    #             # 2. Case-insensitive match
+    #             if val is None:
+    #                 for k, v in contact.items():
+    #                     if k.lower() == key.lower():
+    #                         val = v
+    #                         break
+    #             if val:
+    #                 params[key] = val
+    #     else:
+    #         # Fallback for backward compatibility
+    #         params["FirstName"] = c_name
+    #         params["FirstName "] = c_name 
+
     template_params = ctx.get("template_params", [])
-    
+    logging.info(f"template_params: {template_params}")
+
     # Prepare recipients for batch sending
     recipients = []
-    logging.info(f"contact email send ,{len(contacts)}")
+    logging.info(f"contact email send, {len(contacts)}")
+
     for contact in contacts:
         c_id = contact.get("Id")
         c_email = contact.get("Email")
-        c_name = contact.get("FirstName")
+        
+        # Extract name from various possible fields
+        c_name = contact.get("FirstName") or contact.get("Name") or "Valued Customer"
         
         # Prepare params dynamically
         params = {}
+        
         if template_params:
             for key in template_params:
+                val = None
+                
                 # 1. Exact match
                 val = contact.get(key)
-                # 2. Case-insensitive match
+                
+                # 2. Case-insensitive match if exact match not found
                 if val is None:
                     for k, v in contact.items():
                         if k.lower() == key.lower():
                             val = v
                             break
+                
+                # 3. Special handling for name-related parameters
+                # If template asks for "Name" or "FirstName", use c_name
+                if val is None and key.lower() in ["name", "firstname"]:
+                    val = c_name
+                
                 if val:
                     params[key] = val
         else:
             # Fallback for backward compatibility
             params["FirstName"] = c_name
-            params["FirstName "] = c_name 
+        
+        # Ensure both Name and FirstName are set if either exists in contact
+        # This handles cases where template might use either parameter
+        if "Name" in contact or "FirstName" in contact:
+            if "Name" not in params:
+                params["Name"] = c_name
+            if "FirstName" not in params:
+                params["FirstName"] = c_name
+        
+        logging.info(f"Contact {c_id} params: {params}")
+        
+        # Add to recipients (you'll need to add the actual recipient dict here)
+        # recipients.append({"email": c_email, "params": params, ...})
 
         
         # Inject short links if available
@@ -395,7 +615,9 @@ async def track_delivery_status_node(state: MarketingState) -> MarketingState:
     """
     logging.info("🕵️ [EmailWorkflow] Step 4.5: Checking Immediate Delivery/Bounce Status")
     
-    ctx = state.get("email_workflow_context", {})
+    ctx = state.get("email_workflow_context")
+    if not ctx:
+        ctx = {}
     successfully_sent = ctx.get("successfully_sent_emails", set())
     failed_sends = ctx.get("failed_sends", {})
     
@@ -450,7 +672,9 @@ async def track_delivery_status_node(state: MarketingState) -> MarketingState:
 async def update_salesforce_node(state: MarketingState) -> MarketingState:
     logging.info("☁️ [EmailWorkflow] Step 5: Updating Salesforce Status")
     
-    ctx = state.get("email_workflow_context", {})
+    ctx = state.get("email_workflow_context")
+    if not ctx:
+        ctx = {}
     contacts = ctx.get("contacts", [])
     campaign_id = ctx.get("campaign_id")
     short_links_map = ctx.get("short_links_map", {})
@@ -621,20 +845,70 @@ def build_email_workflow():
 
     builder.set_entry_point("preview_template")
 
-    # Conditional logic
+    # ✅ NEW: Check if workflow should stop after preview
+    def check_preview_success(state):
+        """Stop workflow if preview failed (e.g., missing template)"""
+        if state.get("workflow_failed"):
+            return END
+        return "analyze_links"
+    
+    builder.add_conditional_edges("preview_template", check_preview_success, {
+        "analyze_links": "analyze_links",
+        END: END
+    })
+
+    # Conditional logic for links
     def check_links(state):
-        result = state.get("email_workflow_context", {}).get("has_links", False)
+        if state.get("workflow_failed"):
+            return END
+        
+        ctx = state.get("email_workflow_context")
+        if not ctx:
+            return "send_email"
+        result = ctx.get("has_links", False)
         return "link_shortener" if result else "send_email"
 
     builder.add_conditional_edges("analyze_links", check_links, {
         "link_shortener": "link_shortener",
-        "send_email": "send_email"
+        "send_email": "send_email",
+        END: END
     })
     
-    builder.add_edge("preview_template", "analyze_links")
     builder.add_edge("link_shortener", "send_email")
     builder.add_edge("send_email", "track_delivery")
     builder.add_edge("track_delivery", "update_salesforce")
     builder.add_edge("update_salesforce", END)
 
     return builder.compile()
+# def build_email_workflow():
+#     builder = StateGraph(MarketingState)
+    
+#     builder.add_node("preview_template", preview_template_node)
+#     builder.add_node("analyze_links", analyze_links_node)
+#     builder.add_node("link_shortener", link_shortener_node)
+#     builder.add_node("send_email", send_email_node)
+#     builder.add_node("track_delivery", track_delivery_status_node)
+#     builder.add_node("update_salesforce", update_salesforce_node)
+
+#     builder.set_entry_point("preview_template")
+
+#     # Conditional logic
+#     def check_links(state):
+#         ctx = state.get("email_workflow_context")
+#         if not ctx:
+#             return "send_email"
+#         result = ctx.get("has_links", False)
+#         return "link_shortener" if result else "send_email"
+
+#     builder.add_conditional_edges("analyze_links", check_links, {
+#         "link_shortener": "link_shortener",
+#         "send_email": "send_email"
+#     })
+    
+#     builder.add_edge("preview_template", "analyze_links")
+#     builder.add_edge("link_shortener", "send_email")
+#     builder.add_edge("send_email", "track_delivery")
+#     builder.add_edge("track_delivery", "update_salesforce")
+#     builder.add_edge("update_salesforce", END)
+
+#     return builder.compile()
