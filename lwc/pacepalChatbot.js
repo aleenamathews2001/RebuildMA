@@ -154,9 +154,53 @@ export default class PacepalChatbot extends NavigationMixin(LightningElement) {
         this.pushMessage({ id: Date.now(), type: 'error', content: text, class: 'message message-error', isText: true });
     }
 
+    // addUserMessage(text) {
+    //     this.pushMessage({ id: Date.now(), type: 'user', content: text, class: 'message message-user', isText: true });
+    // }
+
     addUserMessage(text) {
-        this.pushMessage({ id: Date.now(), type: 'user', content: text, class: 'message message-user', isText: true });
+        // First, convert plain URLs to clickable links
+        let processedText = text;
+
+        // Regex to find URLs that are NOT already in <a> tags
+        const urlRegex = /(https?:\/\/[^\s<]+)/g;
+
+        // Check if text already has <a> tags (from rich text)
+        if (!text.includes('<a ')) {
+            // Convert plain URLs to clickable links
+            processedText = text.replace(urlRegex, '<a href="$1" target="_blank">$1</a>');
+        }
+
+        // Then add white color styling to all links
+        processedText = processedText.replace(
+            /<a /g,
+            '<a style="color: #ffffff !important; text-decoration: underline !important;" '
+        );
+
+        this.pushMessage({
+            id: Date.now(),
+            type: 'user',
+            isUser: true,
+            content: processedText,
+            class: 'message message-user',
+            isText: true
+        });
     }
+
+    renderedCallback() {
+        // Manually inject HTML for user messages using message ID
+        this.messages.forEach((msg) => {
+            if (msg.isUser) {
+                const div = this.template.querySelector(`.user-message-html[data-msg-id="${msg.id}"]`);
+                if (div && !div.hasAttribute('data-rendered')) {
+                    div.innerHTML = msg.content;
+                    div.setAttribute('data-rendered', 'true');
+                }
+            }
+        });
+    }
+
+
 
     addAgentMessage(text, createdRecords, hasData) {
         const msgId = Date.now();
@@ -371,16 +415,16 @@ export default class PacepalChatbot extends NavigationMixin(LightningElement) {
 
     // --- Review Proposal Interactions (Inline) ---
 
-    handleToggleEdit(event) {
-        const msgId = event.target.dataset.id;
-        const msgIndex = this.messages.findIndex(m => m.id == msgId);
-        if (msgIndex !== -1) {
-            // Clone to trigger reactivity
-            const newMsg = { ...this.messages[msgIndex] };
-            newMsg.isEditing = !newMsg.isEditing; // Toggle
-            this.messages[msgIndex] = newMsg;
-        }
-    }
+    // handleToggleEdit(event) {
+    //     const msgId = event.target.dataset.id;
+    //     const msgIndex = this.messages.findIndex(m => m.id == msgId);
+    //     if (msgIndex !== -1) {
+    //         // Clone to trigger reactivity
+    //         const newMsg = { ...this.messages[msgIndex] };
+    //         newMsg.isEditing = !newMsg.isEditing; // Toggle
+    //         this.messages[msgIndex] = newMsg;
+    //     }
+    // }
 
     handleFieldChange(event) {
         const msgId = event.target.dataset.msgid;
@@ -398,30 +442,26 @@ export default class PacepalChatbot extends NavigationMixin(LightningElement) {
         }
     }
 
-    handleProceed(event) {
-        const msgId = event.target.dataset.id;
-        const msg = this.messages.find(m => m.id == msgId);
-        if (!msg) return;
+    // handleProceed(event) {
+    //     const msgId = event.target.dataset.id;
+    //     const msg = this.messages.find(m => m.id == msgId);
+    //     if (!msg) return;
 
-        // Construct confirmation logic
-        let confirmMsg = `Proceed with creating ${msg.objectName}. `;
-        const updates = [];
-        msg.fields.forEach(field => {
-            if (field.value) updates.push(`${field.name}='${field.value}'`);
-        });
-        confirmMsg += `Details: ${updates.join(', ')}.`;
+    //     // Construct confirmation logic
+    //     let confirmMsg = `Proceed with creating ${msg.objectName}. `;
+    //     const updates = [];
+    //     msg.fields.forEach(field => {
+    //         if (field.value) updates.push(`${field.name}='${field.value}'`);
+    //     });
+    //     confirmMsg += `Details: ${updates.join(', ')}.`;
 
-        this.sendCustomMessage(confirmMsg);
+    //     this.sendCustomMessage(confirmMsg);
 
-        // Mark as Processed (remove buttons? or just leave them)
-        // User might want to proceed again? Probably safer to leave or disable?
-        // Let's hide the buttons to prevent double submit for now, or just leave as history.
-        // For UI cleanliness, let's switch it back to Read Only
-        if (msg.isEditing) {
-            const msgIndex = this.messages.findIndex(m => m.id == msgId);
-            this.messages[msgIndex] = { ...msg, isEditing: false };
-        }
-    }
+    //     if (msg.isEditing) {
+    //         const msgIndex = this.messages.findIndex(m => m.id == msgId);
+    //         this.messages[msgIndex] = { ...msg, isEditing: false };
+    //     }
+    // }
 
     // --- Helpers ---
 
@@ -493,14 +533,35 @@ export default class PacepalChatbot extends NavigationMixin(LightningElement) {
 
     // --- Review Mode Handlers ---
 
+    // handleToggleEdit(event) {
+    //     const msgId = event.target.dataset.id;
+    //     const msgIndex = this.messages.findIndex(m => m.id == msgId);
+    //     if (msgIndex !== -1) {
+    //         // Clone to trigger reactivity
+    //         const newMsg = { ...this.messages[msgIndex] };
+    //         newMsg.isEditing = !newMsg.isEditing;
+    //         this.messages[msgIndex] = newMsg;
+    //     }
+    // }
     handleToggleEdit(event) {
         const msgId = event.target.dataset.id;
         const msgIndex = this.messages.findIndex(m => m.id == msgId);
         if (msgIndex !== -1) {
-            // Clone to trigger reactivity
-            const newMsg = { ...this.messages[msgIndex] };
+            const msg = this.messages[msgIndex];
+
+            // ✅ Prevent action if already proceeded
+            if (msg.isProceeded) {
+                return;
+            }
+
+            const newMsg = { ...msg };
             newMsg.isEditing = !newMsg.isEditing;
-            this.messages[msgIndex] = newMsg;
+
+            this.messages = [
+                ...this.messages.slice(0, msgIndex),
+                newMsg,
+                ...this.messages.slice(msgIndex + 1)
+            ];
         }
     }
 
@@ -584,17 +645,51 @@ export default class PacepalChatbot extends NavigationMixin(LightningElement) {
         }
     }
 
+    // handleProceed(event) {
+    //     const msgId = event.target.dataset.id;
+    //     const msg = this.messages.find(m => m.id == msgId);
+    //     if (!msg) return;
+
+    //     // Construct confirmation logic
+    //     let confirmMsg = `Proceed with creating ${msg.objectName}. `;
+    //     const updates = [];
+
+    //     msg.fields.forEach(field => {
+    //         // Only add if value exists. For custom fields, Name must also exist.
+    //         if (field.value && field.name) {
+    //             updates.push(`${field.name}='${field.value}'`);
+    //         }
+    //     });
+
+    //     confirmMsg += `Details: ${updates.join(', ')}.`;
+
+    //     // Pass related records context if available
+    //     if (msg.relatedRecords && msg.relatedRecords.length > 0) {
+    //         const ids = msg.relatedRecords.map(r => r.id).join(', ');
+    //         // Explicitly key off "CampaignMember" so backend rule triggers
+    //         confirmMsg += ` AND Create CampaignMember records for the following ${msg.relatedRecords.length} found records: [${ids}]`;
+    //     }
+
+    //     this.sendCustomMessage(confirmMsg, 'Proceeding with the proposed details...');
+
+    //     // Switch back to Read Only
+    //     if (msg.isEditing) {
+    //         const msgIndex = this.messages.findIndex(m => m.id == msgId);
+    //         this.messages[msgIndex] = { ...msg, isEditing: false };
+    //     }
+    // }
     handleProceed(event) {
         const msgId = event.target.dataset.id;
-        const msg = this.messages.find(m => m.id == msgId);
-        if (!msg) return;
+        const msgIndex = this.messages.findIndex(m => m.id == msgId);
+        if (msgIndex === -1) return;
+
+        const msg = this.messages[msgIndex];
 
         // Construct confirmation logic
         let confirmMsg = `Proceed with creating ${msg.objectName}. `;
         const updates = [];
 
         msg.fields.forEach(field => {
-            // Only add if value exists. For custom fields, Name must also exist.
             if (field.value && field.name) {
                 updates.push(`${field.name}='${field.value}'`);
             }
@@ -602,20 +697,27 @@ export default class PacepalChatbot extends NavigationMixin(LightningElement) {
 
         confirmMsg += `Details: ${updates.join(', ')}.`;
 
-        // Pass related records context if available
         if (msg.relatedRecords && msg.relatedRecords.length > 0) {
             const ids = msg.relatedRecords.map(r => r.id).join(', ');
-            // Explicitly key off "CampaignMember" so backend rule triggers
             confirmMsg += ` AND Create CampaignMember records for the following ${msg.relatedRecords.length} found records: [${ids}]`;
         }
 
-        this.sendCustomMessage(confirmMsg, 'Proceeding with the proposed details...');
+        // ✅ FIRST: Mark as proceeded BEFORE sending message
+        const updatedMsg = {
+            ...msg,
+            isProceeded: true,
+            isEditing: false
+        };
 
-        // Switch back to Read Only
-        if (msg.isEditing) {
-            const msgIndex = this.messages.findIndex(m => m.id == msgId);
-            this.messages[msgIndex] = { ...msg, isEditing: false };
-        }
+        // ✅ Force array reactivity with splice + assignment
+        this.messages = [
+            ...this.messages.slice(0, msgIndex),
+            updatedMsg,
+            ...this.messages.slice(msgIndex + 1)
+        ];
+
+        // THEN send the message
+        this.sendCustomMessage(confirmMsg, 'Proceeding with the proposed details...');
     }
 
     // --- Input Handling ---

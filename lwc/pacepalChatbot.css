@@ -6,31 +6,66 @@
     font-family: 'Salesforce Sans', Arial, sans-serif;
 }
 
+.user-message-html {
+    color: #ffffff;
+}
+
+.user-message-html a {
+    color: #ffffff !important;
+    text-decoration: underline !important;
+}
+
 /* Chat Button */
+/* Chat Button - The Pulse */
 .chat-button {
     display: flex;
     align-items: center;
-    gap: 8px;
-    padding: 12px 20px;
-    background: linear-gradient(135deg, #0176d3 0%, #0b5cab 100%);
+    justify-content: center;
+    width: 60px;
+    height: 60px;
+    padding: 0;
+    border-radius: 50%;
+    background: linear-gradient(135deg, #0176d3 0%, #6a1b9a 100%);
     color: white;
     border: none;
-    border-radius: 50px;
     cursor: pointer;
-    box-shadow: 0 4px 12px rgba(1, 118, 211, 0.4);
-    transition: all 0.3s ease;
-    font-size: 14px;
-    font-weight: 600;
+    box-shadow: 0 4px 14px rgba(1, 118, 211, 0.4);
+    transition: all 0.3s cubic-bezier(0.25, 0.8, 0.25, 1);
+    animation: pulse-shadow 2s infinite;
+    z-index: 10000;
 }
 
 .chat-button:hover {
-    transform: translateY(-2px);
-    box-shadow: 0 6px 16px rgba(1, 118, 211, 0.5);
-    background: linear-gradient(135deg, #0b5cab 0%, #014486 100%);
+    transform: scale(1.1);
+    box-shadow: 0 8px 22px rgba(106, 27, 154, 0.5);
+    background: linear-gradient(135deg, #0b5cab 0%, #4a148c 100%);
+}
+
+.chat-button lightning-icon {
+    --sds-c-icon-color-foreground-default: white;
+    transition: transform 0.4s ease;
+}
+
+.chat-button:hover lightning-icon {
+    transform: rotate(15deg);
 }
 
 .chat-button-text {
-    margin: 0;
+    display: none;
+}
+
+@keyframes pulse-shadow {
+    0% {
+        box-shadow: 0 0 0 0 rgba(1, 118, 211, 0.7);
+    }
+
+    70% {
+        box-shadow: 0 0 0 15px rgba(1, 118, 211, 0);
+    }
+
+    100% {
+        box-shadow: 0 0 0 0 rgba(1, 118, 211, 0);
+    }
 }
 
 /* Chat Window */
@@ -289,6 +324,18 @@
 
 .message-content a {
     color: #005fb2;
+    text-decoration: underline;
+}
+
+.message-user .message-content a {
+    color: #ffffff !important;
+    text-decoration: underline;
+}
+
+/* ADD THIS NEW RULE HERE */
+.message-user lightning-formatted-rich-text a,
+.message-user [part="formatted-rich-text"] a {
+    color: #ffffff !important;
     text-decoration: underline;
 }
 

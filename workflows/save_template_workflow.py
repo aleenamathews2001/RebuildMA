@@ -481,6 +481,13 @@ async def upsert_link_node(state: MarketingState) -> MarketingState:
         # final_response should already be set by the node that caused the error
         return state
 
+    # 🛑 CHECK CONTEXT BEFORE INTERRUPT
+    ctx = state.get("save_workflow_context", {})
+    if not ctx.get("campaign_id"):
+        logging.info("   ⚠️ No campaign ID found in context. Skipping interrupt to prevent unnecessary user prompt.")
+        # final_response is already set by prepare_link_node
+        return state
+
     # 🛑 TRIGGER INTERRUPT IMMEDIATELY
     # The payload is already in state["final_response"] from previous node
     interrupt_payload = state.get("final_response")
@@ -538,11 +545,10 @@ async def upsert_link_node(state: MarketingState) -> MarketingState:
                          # flexible ID check
                          rec_id = rec.get("Id") or rec.get("App_Id")
                          if rec_id == campaign_id:
-                             old_val = rec.get("Email_Template__c")
-                             rec["Email_Template__c"] = picklist_value
+                             old_val = rec.get("Email_template__c")
+                             rec["Email_template__c"] = picklist_value
                              logging.info(f"   🔄 Updated shared state for Campaign {campaign_id}: {old_val} -> {picklist_value}")
                              updated_count += 1
-             
              if updated_count > 0:
                  state["shared_result_sets"] = shared_results
                  

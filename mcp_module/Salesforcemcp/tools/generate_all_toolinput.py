@@ -1199,7 +1199,7 @@ logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s [%(levelname)s] %(message)s",
     handlers=[
-        logging.FileHandler("TEST_CLIENT2.log", mode='a', encoding='utf-8'),
+        logging.FileHandler("ChromadbLog.log", mode='a', encoding='utf-8'),
         logging.StreamHandler()
     ],
     force=True
@@ -1288,6 +1288,7 @@ async def fetch_object_fields_optimized(cm, obj_name, user_query, executor):
         loop = asyncio.get_running_loop()
         
         # ✅ Parallel execution but with original's parameters
+        start_fetch = time.time()
         field_task = loop.run_in_executor(
             executor,
             lambda: cm.search_fields(obj_name, user_query, top_k=15)  # Same as original
@@ -1298,6 +1299,9 @@ async def fetch_object_fields_optimized(cm, obj_name, user_query, executor):
         )
         
         field_results, name_field_results = await asyncio.gather(field_task, name_task)
+        
+        fetch_time = time.time() - start_fetch
+        logging.info(f"⏱️ Field fetch for {obj_name}: {fetch_time:.3f}s")
         
         if not field_results:
             return obj_name, None
@@ -1787,6 +1791,16 @@ async def generate_all_toolinput(
     """
     Optimized main generate tool - parallel execution throughout
     """
+    # 🔴 FORCE LOGGING SETUP
+    logging.basicConfig(
+        level=logging.INFO,
+        format="%(asctime)s [%(levelname)s] %(message)s",
+        handlers=[
+            logging.FileHandler("ChromadbLog.log", mode='a', encoding='utf-8'),
+            logging.StreamHandler()
+        ],
+        force=True
+    )
     try:
         if not ensure_sf_connected():
             return {

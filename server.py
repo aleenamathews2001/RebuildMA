@@ -13,7 +13,7 @@ from langgraph.types import Command
 from dotenv import load_dotenv
 from core.mcp_loader import preload_mcp_tools
 from baseagent import get_member_dependency
-from graph.marketing_agent import build_marketing_graph
+from graph.orchestrator import build_orchestrator_graph
 from core.state import MarketingState
 
 import logging
@@ -89,7 +89,7 @@ async def run_agent(websocket: WebSocket):
     
     # 🧠 STATEFUL MEMORY: Persistent checkpointer for this connection
     memory = MemorySaver()
-    agent_graph = build_marketing_graph(checkpointer=memory)
+    agent_graph = build_orchestrator_graph(checkpointer=memory)
     
     # Generate unique session ID for this connection
     session_id = str(uuid.uuid4())
